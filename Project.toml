@@ -1,0 +1,13 @@
+name = "SpeedMapping"
+uuid = "f1835b91-879b-4a3f-a438-e4baacf14412"
+authors = ["Nicolas Lepage-Saucier <42039487+nicolasLepageSaucier@users.noreply.github.com> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
