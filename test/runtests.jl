@@ -24,7 +24,7 @@ end
 C = [1 2 3; 4 5 6; 7 8 9]
 A = C + C'
 
-function map!(x_in, x_out, A) # map for the power method
+function map!(x_in, x_out) # map for the power method
 	x_out .= A * (A * x_in)
 	x_out ./= norm(x_out,Inf)
 end
@@ -47,13 +47,13 @@ end
 	@test speedmapping(zeros(4); f = f).minimizer ≈ [1,1,1,1]
 	@test speedmapping([5.0,5.0]; f = f, g! = g!, lower = [1.5,-Inf]).minimizer ≈ [1.5, 2.25]
 	@test speedmapping([0.0,0.0]; f = f, g! = g!, upper = [Inf,0.25]).minimizer ≈ [0.5048795424100077, 0.25]
-	@test speedmapping(ones(3); map! = (x_in, x_out) -> map!(x_in, x_out, A)).minimizer' * A[:,3] ≈ 32.916472867168714
-	@test speedmapping(ones(3); map! = (x_in, x_out) -> map!(x_in, x_out, A), stabilize = true).minimizer' * A[:,3] ≈ 32.916472867168714
-	@test speedmapping(ones(3); map! = (x_in, x_out) -> map!(x_in, x_out, A), Lp = Inf).minimizer' * A[:,3] ≈ 32.916472867168714
+	@test speedmapping(ones(3); map! = map!).minimizer' * A[:,3] ≈ 32.916472867168714
+	@test speedmapping(ones(3); map! = map!, stabilize = true).minimizer' * A[:,3] ≈ 32.916472867168714
+	@test speedmapping(ones(3); map! = map!, Lp = Inf).minimizer' * A[:,3] ≈ 32.916472867168714
 
 	# Exceptions
 	@test exception(:(speedmapping([0.0, 0.0]; f = f, g! = g!, lower = [1,1])), DomainError) # Can't provide both g! and map!
-	@test exception(:(speedmapping([0.0, 0.0]; g! = g!, map! = (x_in, x_out) -> map!(x_in, x_out, A))), ArgumentError) # Can't provide both g! and map!
+	@test exception(:(speedmapping([0.0, 0.0]; g! = g!, map! = map!)), ArgumentError) # Can't provide both g! and map!
 	@test exception(:(speedmapping([0, 0]; g! = g!)), ArgumentError) # eltype(x_in) is Int
 	@test exception(:(speedmapping([0.0, 0.0]; g! = g!, check_obj = true)), ArgumentError) # check_obj without providing f
 	@test exception(:(speedmapping([1.0, 1.0]; g! = g!)), DomainError) # The gradient is zero
