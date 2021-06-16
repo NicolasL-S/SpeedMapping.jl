@@ -48,7 +48,7 @@ end
 	@test speedmapping([5.0,5.0]; f, g!, lower = [1.5,-Inf]).minimizer ≈ [1.5, 2.25]
 	@test speedmapping([0.0,0.0]; f, g!, upper = [Inf,0.25]).minimizer ≈ [0.5048795424100077, 0.25]
 	@test speedmapping(ones(3); map!).minimizer' * A[:,3] ≈ 32.916472867168714
-	@test speedmapping(ones(3); map!, minimizer = true).minimizer' * A[:,3] ≈ 32.916472867168714
+	@test speedmapping(ones(3); map!, stabilize = true).minimizer' * A[:,3] ≈ 32.916472867168714
 	@test speedmapping(ones(3); map!, Lp = Inf).minimizer' * A[:,3] ≈ 32.916472867168714
 
 	# Exceptions
