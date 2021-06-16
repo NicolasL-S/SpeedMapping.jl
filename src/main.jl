@@ -134,7 +134,11 @@ end
 function update_progress!(s, x, check_obj)
 	if s.go_on
 		if check_obj
-			s.obj_now = s.f(x) # Maybe add a try-catch?
+			try
+				s.obj_now = s.f(x)
+			catch
+				s.obj_now = NaN
+			end
 			s.f_calls += 1
 			s.go_on = !(isnan(s.obj_now) || isinf(s.obj_now))
 		end
