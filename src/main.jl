@@ -1,8 +1,6 @@
-using LinearAlgebra
-#using Base: Int64, Float64
+using LinearAlgebra, ForwardDiff
 const ∅ = nothing
 const ∞ = Inf
-# problem: speedmapping([0.0,0.0]; f, g!, upper = [Inf,0.25], buffer = 0.005, maps_limit = 100, ord = 3)
 Base.@pure mud(x :: Int, m :: Int) :: Int64 = mod.(x - 1, m) + 1
 
 function compute_σ(∇s, σ_min)
