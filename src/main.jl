@@ -54,17 +54,17 @@ function check_arguments(
 ) where {T<:AbstractArray}
 
     if m! ≠ nothing && g! ≠ nothing
-        error(ArgumentError("must not provide both m! and g!")) 
+        throw(ArgumentError("must not provide both m! and g!")) 
     end
     if s.check_obj && f === nothing
-        error(ArgumentError("if check_obj == true, f must be provided.")) 
+        throw(ArgumentError("if check_obj == true, f must be provided.")) 
     end
     if (upper ≠ nothing && maximum(x_in .- upper) > 0) || 
        (lower ≠ nothing && maximum(lower .- x_in) > 0)
-        error(DomainError(x_in, "infeasible starting point")) 
+        throw(DomainError(x_in, "infeasible starting point")) 
     end
     if !(eltype(x_in) <: AbstractFloat)
-        error(ArgumentError("starting point must be of type Float")) 
+        throw(ArgumentError("starting point must be of type Float")) 
     end
     if s.autodiff
         @info "minimizing f using gradient descent and ForwardDiff" 
