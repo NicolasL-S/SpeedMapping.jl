@@ -30,7 +30,7 @@ Let *F* : ℝⁿ → ℝⁿ denote a mapping which admits continuous, bounded pa
 where
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/explanation.svg">
 
-σ⁽ᴾ⁾ is the extrapolation step size and Δᴾ follows Aitken's notation. The algorithm alternates between *p* = 3 and *p* = 2.
+The extrapolation step size is σ⁽ᴾ⁾ and Δᴾ follows Aitken's notation. The algorithm alternates between *p* = 3 and *p* = 2. For gradient descent acceleration, σ⁽ᴾ⁾ is used to adjust the learning rate dynamically.
 
 ### Documentation
 
