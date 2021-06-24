@@ -8,5 +8,5 @@ makedocs(
                 "Home" => "index.md"
                ])
 deploydocs(;
-    repo="github.com/NicolasL-S/SpeedMapping.jl",
+    repo="github.com/NicolasL-S/SpeedMapping.jl.git",
 )

@@ -8,11 +8,9 @@ Coverage = "a2441757-f6aa-5fb2-8edb-039e3f45d037"
 DocumenterTools = "35a29f4d-8980-5a13-9543-d66fff28ecb8"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 
 [compat]
 julia = "1"
-Documenter = "0.27"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
