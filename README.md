@@ -7,10 +7,9 @@
 
 ### The Alternating cyclic extrapolation algorithm
 
-Let `F:\mathbb{R}^{n} \rightarrow \mathbb{R}^{n}` with `n\in N^{+}` denote a mapping which admits continuous, bounded partial derivatives. A  ``p``-order cyclic extrapolation may be synthesized as
+Let ``F:\mathbb{R}^{n} \rightarrow \mathbb{R}^{n}`` with ``n\in N^{+}`` denote a mapping which admits continuous, bounded partial derivatives. A  ``p``-order cyclic extrapolation may be synthesized as
 
-``x_{k+1}=\\sum_{i=0}^{p}\\tbinom{p}{i}(\\sigma_{k}^{(p)})^{i}\\Delta^{i}x_{k}``
-``\\qquadp\\geq2``
+<img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.jpg" title="Extra" />
 
 where `\sigma_{k}^{(p_{k})}=|\langle\Delta^{p_{k}},\Delta^{p_{k}-1}\rangle|/\left\Vert \Delta^{p_{k}}\right\Vert ^{2}`, 
 
@@ -21,3 +20,4 @@ where `\sigma_{k}^{(p_{k})}=|\langle\Delta^{p_{k}},\Delta^{p_{k}-1}\rangle|/\lef
 
 Reference:
 N. Lepage-Saucier, _Alternating cyclic extrapolation methods for optimization algorithms_, arXiv:2104.04974 (2021). https://arxiv.org/abs/2104.04974
+
