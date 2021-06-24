@@ -11,6 +11,13 @@ Let ``F:\mathbb{R}^{n} \rightarrow \mathbb{R}^{n}`` with ``n\in N^{+}`` denote a
 
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.png" title="Extra" width="550"/>
 
+<object data="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.pdf" type="application/pdf" width="6cm" height="1.5cm">
+    <embed src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.pdf">
+        <p>This browser does not support PDFs. Please download the PDF to view it: <a href="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.pdf">Download PDF</a>.</p>
+    </embed>
+</object>
+
+
 where `\sigma_{k}^{(p_{k})}=|\langle\Delta^{p_{k}},\Delta^{p_{k}-1}\rangle|/\left\Vert \Delta^{p_{k}}\right\Vert ^{2}`, 
 
 ### Documentation
