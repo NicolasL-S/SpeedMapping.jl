@@ -28,7 +28,16 @@ Let *F* : ℝⁿ → ℝⁿ denote a mapping which admits continuous, bounded pa
 
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.svg">
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/explanation.svg">
-
+<table style="width:100%">
+  <tr>
+    <td><img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/sigma.svg"></td>
+    <td>is the extrapolation stepsize</td>
+  </tr>
+  <tr>
+    <td>is the extrapolation step size</td>
+    <td>allo</td>
+  </tr>
+</table>
 
 ### Documentation
 
