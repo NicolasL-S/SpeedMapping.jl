@@ -428,7 +428,7 @@ julia> res = speedmapping(ones(10); m! = (x_out, x_in) -> power_iteration!(x_out
 julia> V = res.minimizer;
 
 julia> dominant_eigenvalue = V'A * V / V'V
-16.3100056907922
+32.6200113815844
 
 ```
 # Example: Minimizing a multidimensional Rosenbrock
