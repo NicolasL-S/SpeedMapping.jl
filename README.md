@@ -40,8 +40,6 @@ The extrapolation step size is σ⁽ᴾ⁾ and Δᴾ follows Aitken's notation. 
 
 ### Documentation
 
-https://delaphysique.net/speedmapping/#
-
 [![](https://img.shields.io/badge/docs-stable-blue.svg)](https://delaphysique.net/speedmapping/)
 
 Reference:
