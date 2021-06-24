@@ -67,7 +67,7 @@ function check_arguments(
         throw(ArgumentError("starting point must be of type Float")) 
     end
     if s.autodiff
-        @info "minimizing f using gradient descent and ForwardDiff" 
+        @info "minimizing f using gradient descent acceleration and ForwardDiff" 
     end
     if g! ≠ nothing && init_descent_manually == false && f === nothing
         @info "\U003B1 initialized to 0.01 automatically. For stability, " *
