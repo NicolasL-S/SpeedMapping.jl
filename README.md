@@ -9,7 +9,7 @@
 
 Let ``F:\mathbb{R}^{n} \rightarrow \mathbb{R}^{n}`` with ``n\in N^{+}`` denote a mapping which admits continuous, bounded partial derivatives. A  ``p``-order cyclic extrapolation may be synthesized as
 
-<img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.jpg" title="Extra" width="350"/>
+<img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.png" title="Extra" width="550"/>
 
 where `\sigma_{k}^{(p_{k})}=|\langle\Delta^{p_{k}},\Delta^{p_{k}-1}\rangle|/\left\Vert \Delta^{p_{k}}\right\Vert ^{2}`, 
 
