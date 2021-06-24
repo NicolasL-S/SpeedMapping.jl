@@ -411,6 +411,8 @@ Keyword arguments to fine-tune optimization:
 ```jldoctest
 julia> using LinearAlgebra
 
+julia> using SpeedMapping
+
 julia> A = ones(10) * ones(10)' + Diagonal(1:10);
 
 julia> A = A + A';
