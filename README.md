@@ -39,6 +39,34 @@ Let *F* : ℝⁿ → ℝⁿ denote a mapping which admits continuous, bounded pa
   </tr>
 </table>
 
+Other table
+
+table, td, th {
+  border: 0px solid black;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+td {
+  height: 50px;
+  vertical-align: center;
+}
+</style>
+</head>
+<body>
+
+<h2>The vertical-align Property</h2>
+<p>This property sets the vertical alignment (like top, bottom, or middle) of the content in th or td.</p>
+<table>
+  <tr>
+    <td>Peter</td>
+    <td>Griffin</td>
+  </tr>
+</table>
+
 ### Documentation
 
 [![](https://img.shields.io/badge/docs-stable-blue.svg)](https://USER_NAME.github.io/PACKAGE_NAME.jl/stable)
