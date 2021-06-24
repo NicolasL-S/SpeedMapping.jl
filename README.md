@@ -30,7 +30,12 @@ Let *F* : ℝⁿ → ℝⁿ denote a mapping which admits continuous, bounded pa
 
 where
 
-*    <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/sigma.svg">is the extrapolation step size
+*    <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/sigma.svg"><table>
+  <tr>
+    <td>is the extrapolation step size</td>
+    <td></td>
+  </tr>
+</table>
 
 ### Documentation
 
