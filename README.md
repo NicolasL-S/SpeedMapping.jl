@@ -7,7 +7,7 @@
 
 ### The Alternating cyclic extrapolation algorithm
 
-Let ``F:\mathbb{R}^{n} \rightarrow \mathbb{R}^{n}`` with ``n\in N^{+}`` denote a mapping which admits continuous, bounded partial derivatives. A  ``p``-order cyclic extrapolation may be synthesized as
+Let *F* : ℝⁿ → ℝⁿ with n ∈ *N*⁺ denote a mapping which admits continuous, bounded partial derivatives. A  *p*-order cyclic extrapolation may be synthesized as
 
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.svg">
 
