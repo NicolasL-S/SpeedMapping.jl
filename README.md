@@ -27,45 +27,9 @@ julia> speedmapping(zeros(2); f = rosenbrock)
 Let *F* : ℝⁿ → ℝⁿ denote a mapping which admits continuous, bounded partial derivatives. A  *p*-order cyclic extrapolation may be expressed as
 
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.svg">
+where
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/explanation.svg">
-<table style="width:100%">
-  <tr>
-    <td><img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/sigma.svg"></td>
-    <td>is the extrapolation stepsize</td>
-  </tr>
-  <tr>
-    <td>is the extrapolation step size</td>
-    <td>allo</td>
-  </tr>
-</table>
 
-Other table
-
-table, td, th {
-  border: 0px solid black;
-}
-
-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-
-td {
-  height: 50px;
-  vertical-align: center;
-}
-</style>
-</head>
-<body>
-
-<h2>The vertical-align Property</h2>
-<p>This property sets the vertical alignment (like top, bottom, or middle) of the content in th or td.</p>
-<table>
-  <tr>
-    <td>Peter</td>
-    <td>Griffin</td>
-  </tr>
-</table>
 
 ### Documentation
 
