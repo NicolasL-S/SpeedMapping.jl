@@ -40,8 +40,8 @@ The extrapolation step size is σ⁽ᴾ⁾ and Δᴾ follows Aitken's notation. 
 
 ### Documentation
 
-[![](https://img.shields.io/badge/docs-stable-blue.svg)](https://NicolasL-S.github.io/SpeedMapping.jl/stable)
-[![](https://img.shields.io/badge/docs-dev-blue.svg)](https://NicolasL-S.github.io/SpeedMapping.jl/dev)
+[![](https://img.shields.io/badge/docs-stable-blue.svg)](https://nicolasl-s.github.io/SpeedMapping.jl/)
+[![](https://img.shields.io/badge/docs-dev-blue.svg)](https://nicolasl-s.github.io/SpeedMapping.jl/)
 
 Reference:
 N. Lepage-Saucier, _Alternating cyclic extrapolation methods for optimization algorithms_, arXiv:2104.04974 (2021). https://arxiv.org/abs/2104.04974

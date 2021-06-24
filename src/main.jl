@@ -389,7 +389,7 @@ Minor keyword arguments:
     Advantages of `check_obj = false`: for well-behaved applications, it avoids 
     the effort and time of providing `f` and calling it at every 
     iteration.
-*   `store_info = false`: Stores `xₖ`, `σₖ` and `αₖ` (see paper).
+*   `store_info :: Bool = false`: Stores `xₖ`, `σₖ` and `αₖ` (see paper).
 *   `buffer :: Float64 = 0.01` If `xₖ` goes out of bounds, it is brought back in
     with a buffer. Ex. `xₖ = buffer * xₖ₋₁ + (1 - buffer) * upper`. Setting 
     `buffer = 0.001` may speed-up box-constrained optimization.
@@ -486,7 +486,7 @@ function speedmapping(
     maps_limit :: Real = 1e6, time_limit :: Real = 1000, 
     lower :: Union{AbstractArray, Nothing} = nothing, 
     upper :: Union{AbstractArray, Nothing} = nothing, buffer :: Float64 = 0.01, 
-    store_info = false
+    store_info :: Bool = false
 )
 
     s = State(; autodiff = f ≠ nothing && m! === nothing && g! === nothing, tol, 
