@@ -8,9 +8,9 @@ Base.@kwdef mutable struct State
 
     check_obj    :: Bool
     autodiff     :: Bool
-    Lp           :: Real
-    maps_limit   :: Real
-    time_limit   :: Real
+    Lp           :: Float64
+    maps_limit   :: Float64
+    time_limit   :: Float64
     buffer       :: Float64
     t0           :: Float64
     tol          :: Float64
@@ -67,12 +67,12 @@ function check_arguments(
         throw(ArgumentError("starting point must be of type Float")) 
     end
     if s.autodiff
-        @info "minimizing f using gradient descent acceleration and ForwardDiff" 
+        #@info "minimizing f using gradient descent acceleration and ForwardDiff" 
     end
     if g! ≠ nothing && init_descent_manually == false && f === nothing
-        @info "\U003B1 initialized to 0.01 automatically. For stability, " *
-            "provide an objective function or set \U003B1 manually using " * 
-            "init_descent." 
+        #@info "\U003B1 initialized to 0.01 automatically. For stability, " *
+        #    "provide an objective function or set \U003B1 manually using " * 
+        #    "init_descent." 
     end  
     return nothing
 end
@@ -205,23 +205,14 @@ function prodΔ(∇1 :: T, ∇2 :: T) where {T<:AbstractArray} # if p == 2
     return ΔᵃΔᵇ, ΔᵇΔᵇ
 end
 
-function prodΔ(∇1 :: T, ∇2 :: T, ∇3 :: T) where {T<:AbstractArray} # if p == 3
-
-    ΔᵃΔᵇ = ΔᵇΔᵇ = 0.0
-    for i ∈ eachindex(∇1)
-        Δᵇi = ∇3[i] - 2∇2[i] + ∇1[i]
-        ΔᵇΔᵇ += Δᵇi * Δᵇi
-        ΔᵃΔᵇ += (∇2[i] -  ∇1[i]) * Δᵇi
-    end
-    return ΔᵃΔᵇ, ΔᵇΔᵇ
+function prodΔ(∇1 :: T, ∇2 :: T, temp :: T) where {T<:AbstractArray} # if p == 2
+    temp .= ∇2 .- ∇1
+    return temp ⋅ ∇1, temp ⋅ temp
 end
 
-function extrapolate!( # This method is not a real extrapolation, just a stabilizing step.
-    x_out :: T, x_in :: T, ∇ :: T, s :: State
-) where {T<:AbstractArray}
-
-    @. x_out = x_in - s.α * ∇
-    return nothing
+function prodΔ(∇1 :: T, ∇2 :: T, ∇3 :: T, temp :: T) where {T<:AbstractArray} # if p == 3
+    temp .= ∇3 .- 2∇2 .+ ∇1
+    return temp ⋅ (∇2 .- ∇1), temp ⋅ temp
 end
 
 function extrapolate!(
@@ -395,15 +386,15 @@ Minor keyword arguments:
     `buffer = 0.001` may speed-up box-constrained optimization.
 
 Keyword arguments to fine-tune fixed-point mapping acceleration (using `m!`):
-*   `σ_min :: Real = 0.0`: Setting to `1` may avoid stalling when using `m!`
+*   `σ_min :: Real = 0.0`: Setting to `1` may avoid stalling
     (see paper).
 *   `stabilize :: Bool = false`: performs a stabilization mapping before 
     extrapolating. Setting to `true` may improve the performance for 
     applications like the EM or MM algorithm (see paper).
 
-Keyword arguments to fine-tune optimization:
-*   `init_descent :: Float64 = 0.01` In case `f` is not provided, `α` (the 
-    learning rate) is initialized to init_descent.
+Keyword arguments to fine-tune optimization (using `g!`):
+*   `init_descent :: Float64 = 0.01` In case `f` is not provided, `α₀` (the 
+    initial learning rate) is set to `init_descent`.
 *   `init_descent_manually :: Bool = false`: Forces the use of `init_descent`
     even if `f` is provided.
 
@@ -509,7 +500,7 @@ function speedmapping(
     x₀ = [copy(x_in), similar(x_in)] 
     xs = [similar(x₀[1]) for i ∈ 1:maximum(orders)]
     ∇s = [similar(x₀[1]) for i ∈ 1:maximum(orders)] # Storing ∇s is equivalent to Δs
-    x_try = lower !== nothing || upper !== nothing ? similar(x₀[1]) : nothing # temp storage
+    temp = similar(x₀[1]) # temp storage
 
     if f !== nothing && (m! === nothing || check_obj)
         s.obj_now = s.obj_best = f(x_in) # Useful for initialize_α and tracking progress
@@ -543,7 +534,7 @@ function speedmapping(
 
         if !s.converged && s.go_on
             if p > 1
-                ΔᵃΔᵇ, ΔᵇΔᵇ = prodΔ(∇s[1:p]...)
+                ΔᵃΔᵇ, ΔᵇΔᵇ = prodΔ(∇s[1:p]..., temp)
                 σ_new = abs(ΔᵃΔᵇ) > 1e-100 && ΔᵇΔᵇ > 1e-100 ? abs(ΔᵃΔᵇ) / ΔᵇΔᵇ : 1.0
                 s.σ = max(σ_min, σ_new) * s.σ_mult_fail * s.σ_mult_loop
             end
@@ -551,10 +542,10 @@ function speedmapping(
             if lower === nothing && upper === nothing
                 extrapolate!(x₀[s.ix_new], x₀[s.ix₀], ∇s[1:p]..., s)
             else
-                extrapolate!(x_try, x₀[s.ix₀], ∇s[1:p]..., s)
-                if lower ≠ nothing; bound!(max, x_try, x₀[s.ix₀], lower, s.buffer) end
-                if upper ≠ nothing; bound!(min, x_try, x₀[s.ix₀], upper, s.buffer) end
-                x₀[s.ix_new] .= x_try
+                extrapolate!(temp, x₀[s.ix₀], ∇s[1:p]..., s)
+                if lower ≠ nothing; bound!(max, temp, x₀[s.ix₀], lower, s.buffer) end
+                if upper ≠ nothing; bound!(min, temp, x₀[s.ix₀], upper, s.buffer) end
+                x₀[s.ix_new] .= temp
             end
             store_info!(info, copy(x₀[s.ix_new]), s, true)
             s.ix₀ = s.ix_new
