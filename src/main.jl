@@ -194,16 +194,6 @@ end
 
 # prodΔ computes the dot products Δᵃ ⋅ Δᵇ and Δᵇ ⋅ Δᵇ needed to compute σ 
 # without creating the Δs themselves and minimizes cache misses.
-function prodΔ(∇1 :: T, ∇2 :: T) where {T<:AbstractArray} # if p == 2
-
-    ΔᵃΔᵇ = ΔᵇΔᵇ = 0.0
-    for i ∈ eachindex(∇1)
-        Δᵇi = ∇2[i] - ∇1[i]
-        ΔᵇΔᵇ += Δᵇi * Δᵇi
-        ΔᵃΔᵇ += ∇1[i] * Δᵇi
-    end
-    return ΔᵃΔᵇ, ΔᵇΔᵇ
-end
 
 function prodΔ(∇1 :: T, ∇2 :: T, temp :: T) where {T<:AbstractArray} # if p == 2
     temp .= ∇2 .- ∇1
@@ -213,6 +203,14 @@ end
 function prodΔ(∇1 :: T, ∇2 :: T, ∇3 :: T, temp :: T) where {T<:AbstractArray} # if p == 3
     temp .= ∇3 .- 2∇2 .+ ∇1
     return temp ⋅ (∇2 .- ∇1), temp ⋅ temp
+end
+
+function extrapolate!( # Not a real extrapolation, just a stabilizing step
+    x_out :: T, x_in :: T, ∇ :: T, s :: State
+) where {T<:AbstractArray}
+
+    @. x_out = x_in - s.α * ∇
+    return nothing
 end
 
 function extrapolate!(
