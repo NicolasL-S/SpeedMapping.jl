@@ -404,11 +404,9 @@ julia> using SpeedMapping
 
 julia> A = ones(10) * ones(10)' + Diagonal(1:10);
 
-julia> A = A + A';
-
 julia> function power_iteration!(x_out, x_in, A)
            mul!(x_out, A, x_in)
-           x_out ./= norm(x_out, Inf)
+           x_out ./= maximum(abs.(x_out))
        end;
 
 julia> res = speedmapping(ones(10); m! = (x_out, x_in) -> power_iteration!(x_out, x_in, A))
@@ -417,18 +415,12 @@ julia> res = speedmapping(ones(10); m! = (x_out, x_in) -> power_iteration!(x_out
 julia> V = res.minimizer;
 
 julia> dominant_eigenvalue = V'A * V / V'V
-32.6200113815844
+16.3100056907922
 
 ```
 # Example: Minimizing a multidimensional Rosenbrock
 ```
-julia> function f(x)
-           f_out = 0.0
-           for i ∈ 1:size(x,1)
-                   f_out += 100 * (x[i,1]^2 - x[i,2])^2 + (x[i,1] - 1)^2
-           end
-           return f_out
-       end;
+julia> f(x) = sum(100 * (x[i,1]^2 - x[i,2])^2 + (x[i,1] - 1)^2 for i ∈ 1:size(x,1));
 
 julia> function g!(∇, x)
            ∇[:,1] .=  400(x[:,1].^2 .- x[:,2]) .* x[:,1] .+ 2(x[:,1] .- 1)
@@ -436,34 +428,32 @@ julia> function g!(∇, x)
            return nothing
        end;
 
-julia> x0 = 1.0 * [-4 -3 -2 -1; 0 1 2 3]';
+julia> x₀ = 1.0 * [-4 -3 -2 -1; 0 1 2 3]';
 ```
 
 Optimizing, providing f and g!
 ```
-julia> speedmapping(x0; f, g!)
+julia> speedmapping(x₀; f, g!)
 (minimizer = [0.9999999999406816 0.9999999998811234; 0.9999999999699053 0.9999999999396917; 0.9999999999608367 0.9999999999215149; 0.9999999999704666 0.9999999999408166], maps = 115, f_calls = 8, converged = true, norm_∇ = 8.257289534183707e-11)
 ```
 
 Optimizing without objective
 ```
-julia> speedmapping(x0; g!)
-[ Info: α initialized to 0.01 automatically. For stability, provide an objective function or set α manually using init_descent.
+julia> speedmapping(x₀; g!)
 (minimizer = [0.9999999999667474 0.9999999999333617; 0.9999999999560251 0.9999999999118742; 0.9999999999727485 0.9999999999453878; 0.9999999999142999 0.9999999998282568], maps = 148, f_calls = 0, converged = true, norm_∇ = 9.438023320576503e-11)
 ```
 
 Optimizing without gradient
 ```
-julia> speedmapping(x0; f)
-[ Info: minimizing f using gradient descent and ForwardDiff
+julia> speedmapping(x₀; f)
 (minimizer = [0.9999999999362467 0.9999999998722411; 0.9999999999678646 0.999999999935602; 0.9999999999581914 0.9999999999162139; 0.9999999999687575 0.9999999999373889], maps = 107, f_calls = 8, converged = true, norm_∇ = 8.789493864861286e-11)
 ```
 
 Optimizing with a box constraint
 ```
-julia> upper = [0.5ones(5) Inf * ones(5)];
+julia> upper = [0.5ones(4) Inf * ones(4)];
 
-julia> speedmapping(x0; f, g!, upper)
+julia> speedmapping(x₀; f, g!, upper)
 (minimizer = [0.5 0.2499999999998795; 0.5 0.24999999999979697; 0.5 0.24999999999990052; 0.5 0.24999999999996994], maps = 91, f_calls = 8, converged = true, norm_∇ = 9.705761719383147e-11)
 ```
 """ 
