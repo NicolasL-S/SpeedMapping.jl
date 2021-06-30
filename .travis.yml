@@ -19,6 +19,11 @@ after_success:
   - julia -e 'using Pkg; Pkg.add("Coverage"); using Coverage; Coveralls.submit(Coveralls.process_folder())';
   - julia -e 'Pkg.add("Documenter")'
   - julia -e 'cd(Pkg.dir("SpeedMapping.jl")); include(joinpath("docs", "make.jl"))'
+
+  - julia --project=docs/ -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd()));
+                                          Pkg.instantiate()'
+  - julia --project=docs/ docs/make.jl
+
 jobs:
   include:
     - stage: "Documentation"
