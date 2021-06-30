@@ -17,20 +17,20 @@ Base.@kwdef mutable struct State
  
     go_on        :: Bool = true
     converged    :: Bool = false
-    maps         :: Int = 0 # Or the # of g! calls if optim == true.
-    k            :: Int = 0
-    f_calls      :: Int = 0
+    maps         :: Int64 = 0 # Or the # of g! calls if optim == true.
+    k            :: Int64 = 0
+    f_calls      :: Int64 = 0
     σ            :: Float64 = 0.0
     α            :: Float64 = 1.0
     obj_now      :: Float64 = Inf
     norm_∇       :: Float64 = Inf
 
-    ix₀          :: Int = 1
-    ix           :: Int = 1
-    ix_new       :: Int = 1
-    ix_best      :: Int = 1
-    ord_best     :: Int = 0
-    i_ord        :: Int = 0
+    ix₀          :: Int64 = 1
+    ix           :: Int64 = 1
+    ix_best      :: Int64 = 1
+    ix_new       :: Int64 = 1
+    ord_best     :: Int64 = 0
+    i_ord        :: Int64 = 0
     α_best       :: Float64 = 1.0
     σ_mult_fail  :: Float64 = 1.0
     σ_mult_loop  :: Float64 = 1.0
@@ -41,7 +41,7 @@ Base.@kwdef mutable struct State
 
     σs           :: Array{Float64} = zeros(10)
     norm_∇s      :: Array{Float64} = zeros(10)
-    σs_i         :: Int = 1
+    σs_i         :: Int64 = 1
 end
 
 #####
@@ -336,8 +336,8 @@ end
 """
     SpeedMapping
 `speedmapping(x₀; m!, kwargs...)` accelerates the convergence of a mapping 
-`m!(x_out, x_in)` to a fixed point of `m!` by the `Alternating cyclic 
-extrapolation algorithm` (`ACX`). Since gradient descent is an example 
+`m!(x_out, x_in)` to a fixed point of `m!` by the Alternating cyclic 
+extrapolation algorithm (ACX). Since gradient descent is an example 
 of such mapping, `speedmapping(x0; g!, kwargs...)` can also perform multivariate 
 optimization based on the gradient function `g!(∇, x)`.
 
@@ -508,7 +508,7 @@ function speedmapping(
         s.ix = 0 # Which x is currently beeing updated
 
         # Avoiding a stabilization step if the last extrapolation was close to 1
-        s.i_ord += (stabilize && abs(s.σ - 1) < 0.01 && s.i_ord % 2 == 0)
+        s.i_ord += stabilize && s.i_ord % 2 == 1 && abs(s.σ - 1) < 0.01 && s.k > 1
 
         io = _mod1(s.i_ord, length(orders))
         p = orders[io]
