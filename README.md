@@ -30,7 +30,7 @@ julia> solution = speedmapping(zeros(2); f = rosenbrock).minimizer
 ```
 ## Documentation
 
-[Documentation](https://NicolasL-S.github.io/SpeedMapping.jl/)
+[![](https://img.shields.io/badge/docs-stable-blue.svg)](https://NicolasL-S.github.io/SpeedMapping.jl/stable)
 
 ### The Alternating cyclic extrapolation algorithm
 
