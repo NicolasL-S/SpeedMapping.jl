@@ -36,11 +36,6 @@ julia> solution = speedmapping(zeros(2); f = rosenbrock).minimizer
 
 Let *F* : ℝⁿ → ℝⁿ denote a mapping which admits continuous, bounded partial derivatives. A  *p*-order cyclic extrapolation may be expressed as
 
-The log-likelihood is given by
-```math
-l(\theta) = \sum_{i=1}^n \log(\dfrac{1}{1 + \exp(-y_i \theta^\top x_i)})
-```
-
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.svg">
 where
 <img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/explanation.svg">
