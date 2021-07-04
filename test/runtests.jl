@@ -16,12 +16,25 @@ function g!(∇,x) # Rosenbrock gradient
 	return nothing
 end
 
+function g_matrix!(∇,x) # Rosenbrock gradient for N × 2 input
+	for i ∈ 1:size(x, 1)
+		∇[i, 2] = -200 * (x[i, 1]^2 - x[i, 2])
+		∇[i, 1] =  400 * (x[i, 1]^2 - x[i, 2]) * x[i, 1] + 2(x[i, 1] - 1)
+	end
+	return nothing
+end
+
 # Power method
 C = [1 2 3; 4 5 6; 7 8 9]
 A = C + C'
 
 function m!(x_out, x_in) # map for the power method
 	mul!(x_out, A, x_in)
+	x_out ./= norm(x_out, Inf)
+end
+
+function m_horizontal!(x_out, x_in) # map for the power method
+	x_out .= (A * x_in')'
 	x_out ./= norm(x_out, Inf)
 end
 
@@ -43,10 +56,14 @@ end
 	@test speedmapping(zeros(2); f, g!, check_obj = true).minimizer ≈ [1,1]
 	@test speedmapping(zeros(4); f).minimizer ≈ [1,1,1,1]
 	@test speedmapping([5.0,5.0]; f, g!, lower = [1.5,-Inf]).minimizer ≈ [1.5, 2.25]
-	@test speedmapping([0.0,0.0]; f, g!, upper = [Inf,0.25]).minimizer ≈ [0.5048795424100077, 0.25]
-	@test speedmapping(ones(3); m!).minimizer' * A[:,3] ≈ 32.916472867168714
-	@test speedmapping(ones(3); m!, stabilize = true).minimizer' * A[:,3] ≈ 32.916472867168714
-	@test speedmapping(ones(3); m!, Lp = Inf).minimizer' * A[:,3] ≈ 32.916472867168714
+	@test speedmapping([0.0,0.0]; f, g!, upper = [Inf,0.25]).minimizer ≈ [0.5048795423935251, 0.25]
+	@test speedmapping(ones(3); m!).minimizer' * A[:,3] ≈ 32.916472867168096
+	@test speedmapping(ones(3); m!, stabilize = true).minimizer' * A[:,3] ≈ 32.91647286145264
+	@test speedmapping(ones(3); m!, Lp = Inf).minimizer' * A[:,3] ≈ 32.916472867168096
+
+	#Exotic inputs
+	@test speedmapping(Float32.([-2.0 5.0]); g! = g_matrix!, tol = 1e-4).minimizer ≈ [1 1]
+	@test (speedmapping(Float32.(ones(3)'); m! = m_horizontal!).minimizer * A[:, 3])[1] ≈ 32.916473f0
 
 	# Exceptions
 	# Starting point outside boundary

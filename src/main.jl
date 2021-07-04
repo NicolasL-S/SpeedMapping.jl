@@ -1,3 +1,4 @@
+using AccurateArithmetic
 using ForwardDiff
 using LinearAlgebra
 
@@ -49,8 +50,8 @@ end
 #####
 
 function check_arguments(
-    f, g!, m!, x_in :: T, init_descent_manually :: Bool,
-    lower :: Union{T, Nothing}, upper :: Union{T, Nothing}, s :: State
+    f, g!, m!, x_in :: T, lower :: Union{T, Nothing}, upper :: Union{T, Nothing}, 
+    s :: State
 ) where {T<:AbstractArray}
 
     if m! ≠ nothing && g! ≠ nothing
@@ -69,48 +70,46 @@ function check_arguments(
     if s.autodiff
         #@info "minimizing f using gradient descent acceleration and ForwardDiff" 
     end
-    if g! ≠ nothing && init_descent_manually == false && f === nothing
-        #@info "\U003B1 initialized to 0.01 automatically. For stability, " *
-        #    "provide an objective function or set \U003B1 manually using " * 
-        #    "init_descent." 
-    end  
     return nothing
 end
 
 function α_too_large!(
-    f, s :: State, x₀ :: T, ∇ :: T, ∇∇ :: Float64
+    f, g_auto, g!, s :: State, ∇temp :: T, ∇ :: T, x_in :: T, ∇∇ :: Float64
 ) :: Bool where {T<:AbstractArray}
 
-    obj_new = f(x₀ - s.α * ∇)
-    s.f_calls += 1
-    return _isbad(obj_new) || (obj_new > s.obj_now - 0.25s.α * ∇∇)
+    if f ≠ nothing
+        obj_new = f(x_in - s.α * ∇)
+        s.f_calls += 1
+        return _isbad(obj_new) || (obj_new > s.obj_now - 0.25s.α * ∇∇)
+    else
+        s.autodiff ? ∇temp .= g_auto(x_in .- s.α * ∇) : g!(∇temp, x_in .- s.α * ∇)
+        s.maps += 1
+        ∇∇temp = ∇temp ⋅ ∇temp
+        return _isbad(∇∇temp) || ∇∇temp / ∇∇ > 2
+    end
 end
 
 function initialize_α!(
-    f, s :: State, init_descent :: Float64, init_descent_manually :: Bool, ∇ :: T, x₀ :: T
+    f, g_auto, g!, s :: State, ∇ :: T, x_in :: T, temp :: T
 ) where {T<:AbstractArray}
 
-    ∇∇ = ∇ ⋅ ∇
+    ∇∇ = Float64(∇ ⋅ ∇)
     if ∇∇ == 0 
-        throw(DomainError(x₀, "∇f(x_in) = 0 (extremum or saddle point)")) 
+        throw(DomainError(x_in, "∇f(x_in) = 0 (extremum or saddle point)")) 
     end
 
-    if init_descent_manually == false && f ≠ nothing
-        is_too_large = α_too_large!(f, s, x₀, ∇, ∇∇)
-        min_mult = 4.0
-        mult = min_mult * 64^2
-        for i ∈ 0:30
-            s.α *= mult^(1 - 2is_too_large)
-            was_too_large = is_too_large
-            is_too_large = α_too_large!(f, s, x₀, ∇, ∇∇)
-            if mult == min_mult && (is_too_large + was_too_large == 1) || s.α > 1e6
-                s.α /= min_mult^(is_too_large && !was_too_large)
-                break 
-            end
-            mult = max(mult / 64^(is_too_large + was_too_large == 1), min_mult)
+    is_too_large = α_too_large!(f, g_auto, g!, s, ∇, temp, x_in, ∇∇)
+    min_mult = 2.0
+    mult = min_mult * 64^2
+    for i ∈ 0:30
+        s.α *= mult^(1 - 2is_too_large)
+        was_too_large = is_too_large
+        is_too_large = α_too_large!(f, g_auto, g!, s, temp, ∇, x_in, ∇∇)
+        if mult == min_mult && (is_too_large + was_too_large == 1) || s.α > 1e10
+            s.α /= min_mult^(is_too_large && !was_too_large)
+            break 
         end
-    else 
-        s.α = init_descent
+        mult = max(mult / 64^(is_too_large + was_too_large == 1), min_mult)
     end
     return nothing
 end
@@ -197,12 +196,12 @@ end
 
 function prodΔ(∇1 :: T, ∇2 :: T, temp :: T) where {T<:AbstractArray} # if p == 2
     temp .= ∇2 .- ∇1
-    return temp ⋅ ∇1, temp ⋅ temp
+    return dot_oro(temp, ∇1), dot_oro(temp, temp)
 end
 
 function prodΔ(∇1 :: T, ∇2 :: T, ∇3 :: T, temp :: T) where {T<:AbstractArray} # if p == 3
     temp .= ∇3 .- 2∇2 .+ ∇1
-    return temp ⋅ (∇2 .- ∇1), temp ⋅ temp
+    return dot_oro(temp, (∇2 .- ∇1)), dot_oro(temp, temp)
 end
 
 function extrapolate!( # Not a real extrapolation, just a stabilizing step
@@ -366,9 +365,10 @@ Main keyword arguments:
 *   `time_limit :: Real = 1000`: Maximum time in seconds.
 
 Minor keyword arguments:
-*   `ord :: Int = 2 ∈ {1,2}` sets whether `ACX` alternates between `1`: `[3, 2]` 
-    or `2`: `[3, 3, 2]` extrapolations. For highly non-linear applications, `2` 
-    may be better, but there is no general rule (see paper).
+*   `orders :: Array{Int64} = [3, 3, 2]` determines `ACX`'s alternating order. 
+    Must be between 1 and 3 (where 1 means no extrapolation). The two recommended
+    orders are [3, 2] and [3, 3, 2], the latter being *potentially* better for 
+    highly non-linear applications (see paper).
 *   `check_obj :: Bool = false`: In case of `NaN` or `Inf` values, the algorithm
     restarts at the best past iterate. If `check_obj = true`, progress is 
     monitored with the value of the objective (requires `f`). 
@@ -390,12 +390,6 @@ Keyword arguments to fine-tune fixed-point mapping acceleration (using `m!`):
     extrapolating. Setting to `true` may improve the performance for 
     applications like the EM or MM algorithm (see paper).
 
-Keyword arguments to fine-tune optimization (using `g!`):
-*   `init_descent :: Float64 = 0.01` In case `f` is not provided, `α₀` (the 
-    initial learning rate) is set to `init_descent`.
-*   `init_descent_manually :: Bool = false`: Forces the use of `init_descent`
-    even if `f` is provided.
-
 # Example: Finding a dominant eigenvalue
 ```jldoctest
 julia> using LinearAlgebra
@@ -410,12 +404,12 @@ julia> function power_iteration!(x_out, x_in, A)
        end;
 
 julia> res = speedmapping(ones(10); m! = (x_out, x_in) -> power_iteration!(x_out, x_in, A))
-(minimizer = [0.412149140776937, 0.4409506066686425, 0.47407986422778675, 0.512591614439504, 0.557913573459803, 0.6120273722477959, 0.6777660401470581, 0.7593262779332898, 0.8632012008883913, 1.0], maps = 20, f_calls = 0, converged = true, norm_∇ = 3.0946706265554256e-11)
+(minimizer = [0.41214914122181, 0.44095060739689546, 0.4740798646565511, 0.5125916147320679, 0.5579135738427364, 0.6120273727167589, 0.677766040697063, 0.7593262786058278, 0.8632012019116191, 1.0], maps = 16, f_calls = 0, converged = true, norm_∇ = 2.8042637093700587e-9)
 
 julia> V = res.minimizer;
 
 julia> dominant_eigenvalue = V'A * V / V'V
-16.3100056907922
+16.310005690792195
 
 ```
 # Example: Minimizing a multidimensional Rosenbrock
@@ -434,19 +428,19 @@ julia> x₀ = 1.0 * [-4 -3 -2 -1; 0 1 2 3]';
 Optimizing, providing f and g!
 ```
 julia> speedmapping(x₀; f, g!)
-(minimizer = [0.9999999999406816 0.9999999998811234; 0.9999999999699053 0.9999999999396917; 0.9999999999608367 0.9999999999215149; 0.9999999999704666 0.9999999999408166], maps = 115, f_calls = 8, converged = true, norm_∇ = 8.257289534183707e-11)
+(minimizer = [0.9999999999962509 0.9999999999924867; 0.9999999999941136 0.9999999999882022; 0.9999999999752885 0.9999999999504781; 0.9999999989360835 0.9999999978679094], maps = 156, f_calls = 11, converged = true, norm_∇ = 9.524035730285234e-10)
 ```
 
 Optimizing without objective
 ```
 julia> speedmapping(x₀; g!)
-(minimizer = [0.9999999999667474 0.9999999999333617; 0.9999999999560251 0.9999999999118742; 0.9999999999727485 0.9999999999453878; 0.9999999999142999 0.9999999998282568], maps = 148, f_calls = 0, converged = true, norm_∇ = 9.438023320576503e-11)
+(minimizer = [1.0000000000000542 1.0000000000001086; 0.9999999999999626 0.999999999999925; 0.9999999999997893 0.9999999999995778; 0.9999999999998465 0.9999999999996921], maps = 142, f_calls = 0, converged = true, norm_∇ = 3.524659991326121e-13)
 ```
 
 Optimizing without gradient
 ```
 julia> speedmapping(x₀; f)
-(minimizer = [0.9999999999362467 0.9999999998722411; 0.9999999999678646 0.999999999935602; 0.9999999999581914 0.9999999999162139; 0.9999999999687575 0.9999999999373889], maps = 107, f_calls = 8, converged = true, norm_∇ = 8.789493864861286e-11)
+(minimizer = [0.9999999999973896 0.9999999999947689; 0.9999999999958996 0.9999999999917817; 0.9999999999829567 0.9999999999658452; 0.9999999992743016 0.9999999985456991], maps = 156, f_calls = 11, converged = true, norm_∇ = 6.496402053553401e-10)
 ```
 
 Optimizing with a box constraint
@@ -454,14 +448,13 @@ Optimizing with a box constraint
 julia> upper = [0.5ones(4) Inf * ones(4)];
 
 julia> speedmapping(x₀; f, g!, upper)
-(minimizer = [0.5 0.2499999999998795; 0.5 0.24999999999979697; 0.5 0.24999999999990052; 0.5 0.24999999999996994], maps = 91, f_calls = 8, converged = true, norm_∇ = 9.705761719383147e-11)
+(minimizer = [0.5 0.25; 0.5 0.24999999999999864; 0.49999999999999795 0.2499999999975679; 0.4999999999999807 0.2499999999773891], maps = 138, f_calls = 11, converged = true, norm_∇ = 7.196533863189794e-9)
 ```
 """ 
 function speedmapping(
     x_in :: AbstractArray; f = nothing, g! = nothing, m! = nothing, 
-    ord :: Int = 2, σ_min :: Real = 0.0, stabilize :: Bool = false, 
-    init_descent :: Float64 = 0.01, init_descent_manually :: Bool = false,
-    check_obj :: Bool = false, tol :: Float64 = 1e-10, Lp :: Real = 2, 
+    orders :: Array{Int64} = [3,3,2], σ_min :: Real = 0.0, stabilize :: Bool = false,
+    check_obj :: Bool = false, tol :: Float64 = 1e-8, Lp :: Real = 2, 
     maps_limit :: Real = 1e6, time_limit :: Real = 1000, 
     lower :: Union{AbstractArray, Nothing} = nothing, 
     upper :: Union{AbstractArray, Nothing} = nothing, buffer :: Float64 = 0.01, 
@@ -477,12 +470,10 @@ function speedmapping(
     if lower !== nothing && eltype(lower) ≠ type_x; lower = type_x.(lower) end
     if upper !== nothing && eltype(upper) ≠ type_x; lower = type_x.(upper) end
 
-    check_arguments(f, g!, m!, x_in, init_descent_manually, lower, upper, s)
-
-    orders = [3,3,2][3-ord:3]
+    check_arguments(f, g!, m!, x_in, lower, upper, s)
 
     # Inserting stabilization steps
-    if stabilize; orders = Int.(vec(hcat(ones(ord + 1),orders)')) end
+    if stabilize; orders = Int.(vec(hcat(ones(length(orders)),orders)')) end
 
     # Two x₀s to avoid copying at each improvement (maybe this is excessive optimization?)
     x₀ = [copy(x_in), similar(x_in)] 
@@ -497,7 +488,7 @@ function speedmapping(
 
     if m! === nothing
         s.autodiff ? ∇s[1] .= g_auto(x_in) : g!(∇s[1], x_in) # Will update s.maps later
-        initialize_α!(f, s, init_descent, init_descent_manually, ∇s[1], x_in) 
+        initialize_α!(f, g_auto, g!, s, ∇s[1], x_in, temp)
     end
     
     info = store_info ? (x = [x_in], σ = [s.σ], α = [s.α], extrapolating = [false]) : nothing
@@ -523,7 +514,7 @@ function speedmapping(
         if !s.converged && s.go_on
             if p > 1
                 ΔᵃΔᵇ, ΔᵇΔᵇ = prodΔ(∇s[1:p]..., temp)
-                σ_new = abs(ΔᵃΔᵇ) > 1e-100 && ΔᵇΔᵇ > 1e-100 ? abs(ΔᵃΔᵇ) / ΔᵇΔᵇ : 1.0
+                σ_new = Float64(abs(ΔᵃΔᵇ) > 1e-100 && ΔᵇΔᵇ > 1e-100 ? abs(ΔᵃΔᵇ) / ΔᵇΔᵇ : 1.0)
                 s.σ = max(σ_min, σ_new) * s.σ_mult_fail * s.σ_mult_loop
             end
 
@@ -539,7 +530,7 @@ function speedmapping(
             s.ix₀ = s.ix_new
 
             if p > 1
-                if m! === nothing; update_α!(s, σ_new, ΔᵇΔᵇ) end
+                if m! === nothing; update_α!(s, σ_new, Float64(ΔᵇΔᵇ)) end
                 check_∞_loop!(s, io == length(orders))
             end
         elseif !s.converged && !s.go_on
