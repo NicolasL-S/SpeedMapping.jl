@@ -1,7 +1,7 @@
 name = "SpeedMapping"
 uuid = "f1835b91-879b-4a3f-a438-e4baacf14412"
 authors = ["Nicolas Lepage-Saucier <42039487+nicolasLepageSaucier@users.noreply.github.com> and contributors"]
-version = "0.2.0"
+version = "0.2.1"
 
 [deps]
 AccurateArithmetic = "22286c92-06ac-501d-9306-4abd417d9753"

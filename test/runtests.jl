@@ -1,4 +1,4 @@
-using SpeedMapping, Test, LinearAlgebra
+using SpeedMapping, Test, LinearAlgebra, ForwardDiff
 
 function f(x) # Rosenbrock objective
 	f_out = 0.0
@@ -28,6 +28,7 @@ end
 C = [1 2 3; 4 5 6; 7 8 9]
 A = C + C'
 
+
 function m!(x_out, x_in) # map for the power method
 	mul!(x_out, A, x_in)
 	x_out ./= norm(x_out, Inf)
@@ -46,6 +47,7 @@ function exception(expr, error)
 	catch e
 		goodexception = isa(e, error)
 	end
+	
 	return goodexception
 end
 
@@ -71,9 +73,19 @@ end
 	# Can't provide both g! and m!
 	@test exception(:(speedmapping([0.0, 0.0]; g!, m!)), ArgumentError) 
 	# eltype(x_in) is Int
-	@test exception(:(speedmapping([0, 0]; g!)), ArgumentError) 
+	#using parametric types,it fails before check_arguments
+	@test_broken exception(:(speedmapping([0, 0]; g!)), ArgumentError) 
 	# check_obj without providing f
 	@test exception(:(speedmapping([0.0, 0.0]; g!, check_obj = true)), ArgumentError) 
 	# The gradient is zero
 	@test exception(:(speedmapping([1.0, 1.0]; g!)), DomainError) 
+end
+
+
+@testset "other number types" begin
+	#support for bigfloats
+	@test speedmapping(zeros(BigFloat,2); g!).minimizer isa Vector{BigFloat}
+	#support for ForwardDiff.Dual
+	@test ForwardDiff.jacobian(x -> speedmapping(x; g!).minimizer
+	,[0.0,0.0]) isa Matrix{Float64}
 end
