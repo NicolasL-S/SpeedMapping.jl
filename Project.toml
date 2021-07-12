@@ -14,6 +14,7 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
 [compat]
 AccurateArithmetic = "0.3"
+BenchmarkTools = "1"
 Coverage = "1.3"
 DocumenterTools = "0.1"
 ForwardDiff = "0.10.18"
