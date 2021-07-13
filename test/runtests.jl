@@ -63,10 +63,6 @@ end
 	@test speedmapping(ones(3); m!, stabilize = true).minimizer' * A[:,3] ≈ 32.91647286145264
 	@test speedmapping(ones(3); m!, Lp = Inf).minimizer' * A[:,3] ≈ 32.916472867168096
 
-	#Exotic inputs
-	@test speedmapping(Float32.([-2.0 5.0]); g! = g_matrix!, tol = 1e-4).minimizer ≈ [1 1]
-	@test (speedmapping(Float32.(ones(3)'); m! = m_horizontal!).minimizer * A[:, 3])[1] ≈ 32.916473f0
-
 	# Exceptions
 	# Starting point outside boundary
 	@test exception(:(speedmapping([0.0, 0.0]; f, g!, lower = [1,1])), DomainError) 
@@ -81,11 +77,13 @@ end
 	@test exception(:(speedmapping([1.0, 1.0]; g!)), DomainError) 
 end
 
-
 @testset "other number types" begin
 	#support for bigfloats
 	@test speedmapping(zeros(BigFloat,2); g!).minimizer isa Vector{BigFloat}
 	#support for ForwardDiff.Dual
 	@test ForwardDiff.jacobian(x -> speedmapping(x; g!).minimizer
 	,[0.0,0.0]) isa Matrix{Float64}
+	#support for float32 and matrices
+	@test speedmapping(Float32.([-2.0 5.0]); g! = g_matrix!, tol = 1e-4).minimizer ≈ [1 1]
+	@test (speedmapping(Float32.(ones(3)'); m! = m_horizontal!).minimizer * A[:, 3])[1] ≈ 32.916473f0
 end

@@ -313,7 +313,7 @@ function α_too_large!(
 
     ∇s[1] .= ∇_in # Because of box constraints, descent_x! may modify ∇s[1]
     descent!(xs[1], ∇s[1], s, x_in, lower, upper)
-    ∇∇1 = Float64(∇s[1] ⋅ ∇s[1])
+    ∇∇1 = ∇s[1] ⋅ ∇s[1]
 
     if using_f
         obj_new = f(xs[1])
