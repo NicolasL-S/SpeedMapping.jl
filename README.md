@@ -23,10 +23,9 @@ Optimizing a function
 julia> using SpeedMapping
 julia> rosenbrock(x) =  (1 - x[1])^2 + 100(x[2] - x[1]^2)^2;
 julia> solution = speedmapping(zeros(2); f = rosenbrock).minimizer
-[ Info: minimizing f using gradient descent acceleration and ForwardDiff
 2-element Vector{Float64}:
- 0.9999999999986109
- 0.9999999999980284
+ 0.9999999999995581
+ 1.0000000000003488
 ```
 ## Documentation
 
