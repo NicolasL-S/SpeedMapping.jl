@@ -24,8 +24,8 @@ julia> using SpeedMapping
 julia> rosenbrock(x) =  (1 - x[1])^2 + 100(x[2] - x[1]^2)^2;
 julia> solution = speedmapping(zeros(2); f = rosenbrock).minimizer
 2-element Vector{Float64}:
- 0.9999999999995581
- 1.0000000000003488
+ 1.0000000000001315
+ 0.9999999999999812
 ```
 ## Documentation
 

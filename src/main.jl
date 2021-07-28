@@ -36,10 +36,7 @@ Base.@kwdef mutable struct State{T<:Real}
     obj_now      :: T = T(Inf)
     norm_∇       :: T = T(Inf)
 
-    ix₀          :: Int64 = 1
     ix           :: Int64 = 1
-    ix_best      :: Int64 = 1
-    ix_new       :: Int64 = 1
     ord_best     :: Int64 = 0
     i_ord        :: Int64 = 0
     α_best       :: T = one(T)
@@ -74,7 +71,7 @@ end
 
 @inline function descent!(
     x_out :: T, ∇ :: T, s :: State, 
-	x_in :: T, lower :: Union{T, Nothing}, upper :: Union{T, Nothing}
+    x_in :: T, lower :: Union{T, Nothing}, upper :: Union{T, Nothing}
 ) where {T<:AbstractArray}
     @muladd @. x_out = x_in - s.α * ∇
     if lower ≠ nothing; bound!(max, x_out, x_in, lower, s.buffer) end
@@ -100,7 +97,7 @@ end
         # ...if we also slow down the change of x from mappings.
         if s.α < 1; @muladd @. x_out += (1 - s.α) * ∇ end
     end
-    s.norm_∇ = norm(∇, s.Lp)
+    s.norm_∇ =  norm(∇, s.Lp)
     return nothing
 end
 
@@ -119,59 +116,45 @@ end
 
 @inline function mapping!(
     f, gm!, x_out :: T, ∇ :: T, s :: State, info, x_in :: T, 
-	lower :: Union{T, Nothing}, upper :: Union{T, Nothing}, is_map :: Bool
+    lower :: Union{T, Nothing}, upper :: Union{T, Nothing}, is_map :: Bool, store_info :: Bool
 ) where {T<:AbstractArray}
 
     if s.go_on
-        try
-            update_x!(gm!, x_out, ∇, s, x_in, lower, upper, is_map)
-        catch
-            if s.k == 1 # To initially catch any type or function errors.
-	            update_x!(gm!, x_out, ∇, s, x_in, lower, upper, is_map)
-            end
-            s.go_on = false
-        end
+        update_x!(gm!, x_out, ∇, s, x_in, lower, upper, is_map)
         s.ix += 1
         s.maps += 1
         !_isbad(s.norm_∇) ? check_convergence!(f, s, x_out) : s.go_on = false
-        store_info!(info, copy(x_out), s, false)
+        if store_info; store_info!(info, x_out, s, 1, false) end
     end
     return nothing
 end
 
-function prodΔ(∇1 :: T, ∇2 :: T, tmp1 :: T, _) where {T<:AbstractArray} # if p == 2
-    @. tmp1 = ∇2 - ∇1
-    return accurate_dot(tmp1, ∇1), accurate_dot(tmp1, tmp1)
-end
-
-function prodΔ(∇1 :: T, ∇2 :: T, ∇3 :: T, tmp1 :: T, tmp2 :: T) where {T<:AbstractArray} # if p == 3
-    @. tmp1 = ∇2 - ∇1
-    @muladd @. tmp2 = ∇3 - 2∇2 + ∇1
-    return accurate_dot(tmp2, tmp1), accurate_dot(tmp2, tmp2)
-end
-
-function extrapolate!( # Not a real extrapolation, just a stabilizing step
-    x_out :: T, x_in :: T, ∇ :: T, s :: State
-) where {T<:AbstractArray}
-
-    @muladd @. x_out = x_in - s.α * ∇
-    return nothing
+function prodΔ(∇s :: Vector{T}, tmp1 :: T, tmp2 :: T, p :: Int64) where {T<:AbstractArray}
+    @. tmp1 = ∇s[2] - ∇s[1]
+    if p == 2
+        return accurate_dot(tmp1, ∇s[1]), accurate_dot(tmp1, tmp1)
+    elseif p == 3
+        @muladd @. tmp2 = ∇s[3] - 2∇s[2] + ∇s[1]
+        return accurate_dot(tmp2, tmp1), accurate_dot(tmp2, tmp2)
+    end
 end
 
 function extrapolate!(
-    x_out :: T, x_in :: T, ∇1 :: T, ∇2 :: T, s :: State
+    x_out :: T, x_in :: T, ∇s :: Vector{T}, s :: State, p :: Int64
 ) where {T<:AbstractArray}
 
-    @muladd @. x_out = x_in - (s.α * (2s.σ - s.σ^2)) * ∇1 - (s.α * s.σ^2) * ∇2
-    return nothing
-end
-
-function extrapolate!(
-    x_out :: T, x_in :: T, ∇1 :: T, ∇2 :: T, ∇3 :: T, s :: State
-) where {T<:AbstractArray}
-
-    @muladd @. x_out = x_in - (s.α * (3s.σ - 3s.σ^2 + s.σ^3)) * ∇1 - 
-        (s.α * (3s.σ^2 - 2s.σ^3)) * ∇2 - (s.α * s.σ^3) * ∇3
+    if p == 1
+        @muladd @. x_out = x_in - s.α * ∇s[1] # Just a stabilizing step
+    elseif p == 2
+		c1 = s.α * (2s.σ - s.σ^2)
+		c2 = s.α * s.σ^2
+        @muladd @. x_out = x_in - c1 * ∇s[1] - c2 * ∇s[2]
+    elseif p == 3
+		c1 = s.α * (3s.σ - 3s.σ^2 + s.σ^3)
+		c2 = s.α * (3s.σ^2 - 2s.σ^3)
+		c3 = s.α * s.σ^3
+        @muladd @. x_out = x_in - c1 * ∇s[1] - c2 * ∇s[2] - c3 * ∇s[3]
+    end
     return nothing
 end
 
@@ -194,18 +177,17 @@ end
 # update_progress! is used to know which iterate to fall back on when 
 # backtracking and, optionally, which x was the smallest minimizer in case the 
 # problem has multiple minima.
-@inline function update_progress!(f, s :: State{F}, x :: AbstractArray) where F
 
+@inline function update_progress!(f, s :: State{F}, x₀ :: AbstractArray, x_best) where F
     if s.go_on && s.check_obj
-        s.obj_now = f(x)
+        s.obj_now = f(x₀)
         s.f_calls += 1
         s.go_on = !_isbad(s.obj_now)
     end
 
     if s.go_on && (( s.check_obj && s.obj_now < s.obj_best) 
                 || (!s.check_obj && s.norm_∇ < s.norm_best))
-        s.ix_best = s.ix₀
-        s.ix_new = _mod1(s.ix₀ + 1, 2)
+		x_best .= x₀
         s.ord_best, s.α_best = (s.i_ord, s.α)
         s.σ_mult_fail = s.α_mult = one(F)
         s.check_obj ? s.obj_best = s.obj_now : s.norm_best = s.norm_∇
@@ -213,9 +195,9 @@ end
     return nothing
 end
 
-function backtrack!(s :: State)
+function backtrack!(s :: State, x₀ :: T, x_best :: T) where T <: AbstractArray
 
-    s.ix₀ = s.ix_best
+    x₀ .= x_best
     s.i_ord = s.ord_best
     s.σ_mult_fail /= 2
     s.α_mult /= 2
@@ -232,7 +214,7 @@ end
 # of iterations, we divide α and σ by 2.
 
 function check_∞_loop!(
-	s :: State, last_order :: Bool, σs :: Vector{T}, norm_∇s :: Vector{T}
+    s :: State, last_order :: Bool, σs :: Vector{T}, norm_∇s :: Vector{T}
 ) where T<:Real
 
     if s.σ > σs[s.σs_i]
@@ -265,14 +247,13 @@ end
 ##### Miscellaneous
 #####
 
-function store_info!(info, x, s :: State, extrapolating)
+function store_info!(info, x, s :: State, p, extrapolating)
 
-    if info ≠ nothing
-        push!(info.x, x)
-        push!(info.σ, s.σ)
-        push!(info.α, s.α)
-        push!(info.extrapolating, extrapolating)
-    end
+    push!(info.x, copy(x))
+    push!(info.σ, s.σ)
+    push!(info.α, s.α)
+    push!(info.p, p)
+    push!(info.extrapolating, extrapolating)
     return nothing
 end
 
@@ -307,8 +288,8 @@ end
 
 function α_too_large!(
     f, gm!, s :: State{F}, ∇s :: Vector{T}, xs :: Vector{T}, 
-	x_in :: T, ∇_in :: T, lower :: Union{T, Nothing}, upper :: Union{T, Nothing}, 
-	using_f :: Bool
+    x_in :: T, ∇_in :: T, lower :: Union{T, Nothing}, upper :: Union{T, Nothing}, 
+    using_f :: Bool
 ) :: Bool where {F,T<:AbstractArray}
 
     ∇s[1] .= ∇_in # Because of box constraints, descent_x! may modify ∇s[1]
@@ -328,9 +309,11 @@ function α_too_large!(
     end
 end
 
-function initialize_α!(
+# From an initial α = 1, we converge on the largest possible α within a factor of
+# 2 that respects the Armijo condition and the gradient not increasing too fast.
+@inline function initialize_α!(
     f, gm!, s :: State{F}, ∇s :: Vector{T}, xs :: Vector{T}, tmp1 :: T, tmp2 :: T, 
-	x_in :: T, ∇_in :: T, lower :: Union{T, Nothing}, upper :: Union{T, Nothing}
+    x_in :: T, ∇_in :: T, lower :: Union{T, Nothing}, upper :: Union{T, Nothing}
 ) where {F,T<:AbstractArray}
 
     max_α = 1e10
@@ -376,11 +359,11 @@ end
 ##### Main funtion
 #####
 
-# We use this internal _speedmapping "barrier" function to remove the type 
+# We use this internal _speedmapping function to remove the type 
 # instability associated with g! and m!.
 function _speedmapping(
     x_in :: AbstractArray{F}, f, gm!, is_map :: Bool, orders :: Vector{Int64}, 
-	σ_min, stabilize, check_obj, tol, Lp, maps_limit, time_limit, 
+    σ_min, stabilize, check_obj, tol, Lp, maps_limit, time_limit, 
     lower, upper, buffer, store_info :: Bool
 ) where F <: Real
 
@@ -396,9 +379,10 @@ function _speedmapping(
 
     # Two x₀s to avoid copying at each improvement (maybe this is excessive optimization?)
     #using copy instead of similar because BigFloats have problems
-    x₀ = [copy(x_in), similar(x_in)] 
+    x₀ = copy(x_in)
     xs = [similar(x_in) for i ∈ 1:maximum(orders)]
     ∇s = [similar(x_in) for i ∈ 1:maximum(orders)] # Storing ∇s is equivalent to Δs
+	x_best = similar(x_in)
     (tmp1, tmp2) = (similar(x_in),similar(x_in)) # temp storage
 
     if f ≠ nothing && (!is_map || check_obj)
@@ -407,16 +391,16 @@ function _speedmapping(
     end
 
     if !is_map
-        gm!(x₀[2], x_in) # Here x₀[2] acts purely as temp storage for the initial ∇ to avoid allocating a tmp3. 
+        gm!(x_best, x_in) # Here x_best acts purely as temp storage for the initial ∇ to avoid allocating a tmp3. 
         s.maps = -1 # To avoid double counting since we'll save the 2 first gradient evaluations
-        if x₀[2] ⋅ x₀[2] == 0
+        if x_best ⋅ x_best == 0
             throw(DomainError(x_in, "∇f(x_in) = 0 (extremum or saddle point)")) 
         end
-        initialize_α!(f, gm!, s, ∇s, xs, tmp1, tmp2, x_in, x₀[2], lower, upper)
+        initialize_α!(f, gm!, s, ∇s, xs, tmp1, tmp2, x_in, x_best, lower, upper)
         if abs(∇s[2] ⋅ ∇s[1]) / (∇s[2] ⋅ ∇s[2]) < 1; s.i_ord = length(orders) - 1 end
     end
     
-    info = store_info ? (x = [x_in], σ = [s.σ], α = [s.α], extrapolating = [false]) : nothing
+    info = store_info ? (x = [x_in], σ = [s.σ], α = [s.α], p = [0], extrapolating = [false]) : nothing
 
     σs      = zeros(F,10)
     norm_∇s = zeros(F,10)
@@ -432,36 +416,31 @@ function _speedmapping(
         p = orders[io]
         s.go_on = true
 
-        mapping!(f, gm!, xs[1], ∇s[1], s, info, x₀[s.ix₀], lower, upper, is_map)
-        update_progress!(f, s, x₀[s.ix₀])
+        mapping!(f, gm!, xs[1], ∇s[1], s, info, x₀, lower, upper, is_map, store_info)
+        update_progress!(f, s, x₀, x_best)
         for i ∈ 2:p
-            mapping!(f, gm!, xs[i], ∇s[i], s, info, xs[i - 1], lower, upper, is_map)
+            mapping!(f, gm!, xs[i], ∇s[i], s, info, xs[i - 1], lower, upper, is_map, store_info)
         end
 
         if !s.converged && s.go_on
             if p > 1
-                ΔᵃΔᵇ, ΔᵇΔᵇ = prodΔ(∇s[1:p]..., tmp1, tmp2)
+                ΔᵃΔᵇ, ΔᵇΔᵇ = prodΔ(∇s, tmp1, tmp2, p)
                 σ_new = F(abs(ΔᵃΔᵇ) > 1e-100 && ΔᵇΔᵇ > 1e-100 ? abs(ΔᵃΔᵇ) / ΔᵇΔᵇ : 1.0)
                 s.σ = max(σ_min, σ_new) * s.σ_mult_fail * s.σ_mult_loop
             end
 
-            if lower === nothing && upper === nothing
-                extrapolate!(x₀[s.ix_new], x₀[s.ix₀], ∇s[1:p]..., s)
-            else
-                extrapolate!(tmp1, x₀[s.ix₀], ∇s[1:p]..., s)
-                if lower ≠ nothing; bound!(max, tmp1, x₀[s.ix₀], lower, s.buffer) end
-                if upper ≠ nothing; bound!(min, tmp1, x₀[s.ix₀], upper, s.buffer) end
-                x₀[s.ix_new] .= tmp1
-            end
-            store_info!(info, copy(x₀[s.ix_new]), s, true)
-            s.ix₀ = s.ix_new
+            extrapolate!(tmp1, x₀, ∇s, s, p)
+            if lower ≠ nothing; bound!(max, tmp1, x₀, lower, s.buffer) end
+            if upper ≠ nothing; bound!(min, tmp1, x₀, upper, s.buffer) end
+            x₀ .= tmp1
+            if store_info; store_info!(info, x₀, s, p, true) end
 
             if p > 1
                 if !is_map; update_α!(s, σ_new, F(ΔᵇΔᵇ)) end
                 check_∞_loop!(s, io == length(orders), σs, norm_∇s)
             end
         elseif !s.converged && !s.go_on
-            backtrack!(s)
+            backtrack!(s, x₀, x_best )
         end
     end
     
@@ -471,10 +450,10 @@ function _speedmapping(
         @warn "Exceeded time limit of $time_limit seconds."
     end
 
-    minimizer = s.check_obj && s.obj_best < s.obj_now ? x₀[s.ix_best] : xs[s.ix]
+    minimizer = s.check_obj && s.obj_best < s.obj_now ? x_best : xs[s.ix]
 
     return (minimizer = minimizer, maps = s.maps, f_calls = s.f_calls, 
-        converged = s.converged, norm_∇ = s.norm_∇)
+        converged = s.converged, norm_∇ = s.norm_∇, info = info)
 end
 
 """
@@ -549,12 +528,12 @@ julia> function power_iteration!(x_out, x_in, A)
        end;
 
 julia> res = speedmapping(ones(10); m! = (x_out, x_in) -> power_iteration!(x_out, x_in, A))
-(minimizer = [0.41214914122181, 0.44095060739689546, 0.4740798646565511, 0.5125916147320679, 0.5579135738427364, 0.6120273727167589, 0.677766040697063, 0.7593262786058278, 0.8632012019116191, 1.0], maps = 16, f_calls = 0, converged = true, norm_∇ = 2.8042637093700587e-9)
+(minimizer = [0.4121491412218099, 0.4409506073968953, 0.47407986465655094, 0.5125916147320677, 0.5579135738427361, 0.612027372716759, 0.6777660406970623, 0.7593262786058275, 0.8632012019116189, 1.0], maps = 16, f_calls = 0, converged = true, norm_∇ = 2.804263612262994e-9, info = nothing)
 
 julia> V = res.minimizer;
 
 julia> dominant_eigenvalue = V'A * V / V'V
-16.310005690792195
+16.3100056907922
 
 ```
 # Example: Minimizing a multidimensional Rosenbrock
@@ -573,27 +552,25 @@ julia> x₀ = 1.0 * [-4 -3 -2 -1; 0 1 2 3]';
 Optimizing, providing f and g!
 ```
 julia> speedmapping(x₀; f, g!)
-(minimizer = [0.9999999999962509 0.9999999999924867; 0.9999999999941136 0.9999999999882022; 0.9999999999752885 0.9999999999504781; 0.9999999989360835 0.9999999978679094], maps = 156, f_calls = 11, converged = true, norm_∇ = 9.524035730285234e-10)
+(minimizer = [0.999999999982878 0.9999999999656839; 0.9999999999732417 0.9999999999463607; 0.9999999998875755 0.9999999997746609; 0.9999999951927082 0.9999999903661674], maps = 180, f_calls = 11, converged = true, norm_∇ = 4.306438901515058e-9, info = nothing)
 ```
 
 Optimizing without objective
 ```
 julia> speedmapping(x₀; g!)
-(minimizer = [0.999999999999963 0.9999999999999258; 0.9999999998898832 0.9999999997793259; 0.9999999992432934 0.9999999984835589; 0.9999999997264298 0.9999999994517651], maps = 195, f_calls = 0, converged = true, norm_∇ = 7.26662004150225e-10)
+(minimizer = [1.000000000000002 1.000000000000004; 0.999999999999956 0.9999999999999117; 0.9999999999998761 0.9999999999997516; 0.999999999999863 0.9999999999997254], maps = 148, f_calls = 0, converged = true, norm_∇ = 2.7446698204458767e-13, info = nothing)
 ```
 
 Optimizing without gradient
 ```
 julia> speedmapping(x₀; f)
-(minimizer = [0.9999999999973896 0.9999999999947689; 0.9999999999958996 0.9999999999917817; 0.9999999999829567 0.9999999999658452; 0.9999999992743016 0.9999999985456991], maps = 156, f_calls = 11, converged = true, norm_∇ = 6.496402053553401e-10)
+(minimizer = [0.9999999999957527 0.9999999999914151; 0.9999999999933037 0.9999999999865801; 0.9999999999716946 0.9999999999432596; 0.9999999987753265 0.999999997545751], maps = 172, f_calls = 11, converged = true, norm_∇ = 1.0971818937506587e-9, info = nothing)
 ```
 
 Optimizing with a box constraint
 ```
-julia> upper = [0.5ones(4) Inf * ones(4)];
-
-julia> speedmapping(x₀; f, g!, upper)
-(minimizer = [0.5 0.25; 0.5 0.24999999999999864; 0.49999999999999795 0.2499999999975679; 0.4999999999999807 0.2499999999773891], maps = 138, f_calls = 11, converged = true, norm_∇ = 7.196533863189794e-9)
+julia> speedmapping(x₀; f, g!, upper = [0.5ones(4) Inf * ones(4)])
+(minimizer = [0.5 0.25; 0.49999999999999434 0.24999999996939753; 0.5 0.24999999999999997; 0.4999999999999999 0.24999999999948902], maps = 71, f_calls = 7, converged = true, norm_∇ = 8.135561263867014e-9, info = nothing)
 ```
 """ 
 function speedmapping(
