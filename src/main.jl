@@ -116,7 +116,7 @@ end
         if s.ix < s.p || s.has_constr # Computing the last x before extrapolation is useless unless we need to check boundaries
             descent!(x_out, ∇, s, x_in, lower, upper)
         end
-        s.norm_∇ = norm(∇,) # NOTE: to provide an accurate stopping criterion, s.norm_∇ MUST be computed here, where it is the true gradient orthogonal to the binding constraints. After, ∇ is updated to be used in the extrapolation.
+        s.norm_∇ = norm(∇,s.Lp) # NOTE: to provide an accurate stopping criterion, s.norm_∇ MUST be computed here, where it is the true gradient orthogonal to the binding constraints. After, ∇ is updated to be used in the extrapolation.
         if s.has_constr
             ∇ .= x_in .- x_out # ∇ needs to be updated to be used in the extrapolation in case some constraints were binding.
         end
@@ -125,7 +125,7 @@ end
         gm!(x_out, x_in) # Note: I prefer computing ∇ like this (storing x_in before calling gm!(x_out, x_in)) just in case map!(x_out, x_in) provided by the user somehow changes x_in as well as x_out
         ∇ .-= x_out
 
-        s.norm_∇ = norm(∇)
+        s.norm_∇ = norm(∇, s.Lp)
         if s.α < 1
             @muladd @. x_out += (1 - s.α) * ∇ # If the algorithm has reached an infeasible value, it helps stability of the algorithm if we also slow down the change of x from mappings.
         end
