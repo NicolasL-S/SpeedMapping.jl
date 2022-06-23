@@ -1,4 +1,4 @@
-using Test, LinearAlgebra, ForwardDiff
+using SpeedMapping, Test, LinearAlgebra, ForwardDiff
 
 function f(x) # Rosenbrock objective
     f_out = 0.0
@@ -89,7 +89,7 @@ end
 
     #support for float32 and matrices
     @test speedmapping(Float32.([-2.0 5.0]); (g!)=g_matrix!, tol=1e-4).minimizer ≈ [1 1]
-    @test (speedmapping(Float32.(ones(3)'); (m!)=m_horizontal!).minimizer * A[:, 3])[1] ≈ 32.916473f0
+    @test (speedmapping(Float32.(ones(3)'); (m!)=m_horizontal!).minimizer*A[:, 3])[1] ≈ 32.916473f0
 
     #support for Complex type
     @test speedmapping(ones(10) .+ 0im; (m!)=(x_out, x_in) -> m!(x_out, x_in, B)).minimizer' * B[:, 10] ≈ 4.083655765461623 + 12.373570801838728im
