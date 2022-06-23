@@ -25,7 +25,7 @@ Base.@kwdef mutable struct State{T<:Number,RealT<:Real}
     time_limit::Int
 
     buffer::RealT
-    Lp::T = T(2)
+    Lp::RealT = RealT(2)
     tol::RealT = √eps(RealT)
 
     go_on::Bool = true
@@ -116,7 +116,7 @@ end
         if s.ix < s.p || s.has_constr # Computing the last x before extrapolation is useless unless we need to check boundaries
             descent!(x_out, ∇, s, x_in, lower, upper)
         end
-        s.norm_∇ = norm(∇,s.Lp) # NOTE: to provide an accurate stopping criterion, s.norm_∇ MUST be computed here, where it is the true gradient orthogonal to the binding constraints. After, ∇ is updated to be used in the extrapolation.
+        s.norm_∇ = norm(∇, s.Lp) # NOTE: to provide an accurate stopping criterion, s.norm_∇ MUST be computed here, where it is the true gradient orthogonal to the binding constraints. After, ∇ is updated to be used in the extrapolation.
         if s.has_constr
             ∇ .= x_in .- x_out # ∇ needs to be updated to be used in the extrapolation in case some constraints were binding.
         end
