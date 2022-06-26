@@ -20,6 +20,7 @@ Base.@kwdef mutable struct State{T<:Number,RealT<:Real}
     has_obj::Bool
     is_map::Bool
     has_constr::Bool
+    store_info::Bool
 
     maps_limit::Int
     time_limit::Int
@@ -113,7 +114,7 @@ end
         if s.k > 1 || s.ix > 1 # If s.k == 1 && s.ix ≤ 1, ∇ and x were already computed while initializing α.
             gm!(∇, x_in)
         end
-        if s.ix < s.p || s.has_constr # Computing the last x before extrapolation is useless unless we need to check boundaries
+        if s.ix < s.p || s.has_constr || s.store_info # Computing the last x before extrapolation is useless unless we need to check boundaries or store info
             descent!(x_out, ∇, s, x_in, lower, upper)
         end
         s.norm_∇ = norm(∇, s.Lp) # NOTE: to provide an accurate stopping criterion, s.norm_∇ MUST be computed here, where it is the true gradient orthogonal to the binding constraints. After, ∇ is updated to be used in the extrapolation.
@@ -148,7 +149,7 @@ end
 
 @inline function mapping!(
     f, gm!, x_out::ArrT, ∇::ArrT, s::State, info, x_in::ArrT,
-    lower::Union{AbstractArray,Nothing}, upper::Union{AbstractArray,Nothing}, store_info::Bool
+    lower::Union{AbstractArray,Nothing}, upper::Union{AbstractArray,Nothing}
 ) where {ArrT<:AbstractArray}
 
     if s.go_on
@@ -159,9 +160,7 @@ end
         if s.converged && s.ix == s.p && !s.has_constr # Updating the last x is now useful
             descent!(x_out, ∇, s, x_in, lower, upper)
         end
-        if store_info
-            store_info!(info, x_out, s, false)
-        end
+        store_info!(info, x_out, s, false)
     end
     return nothing
 end
@@ -292,12 +291,13 @@ end
 #####
 
 function store_info!(info, x, s::State, extrapolating)
-
-    push!(info.x, copy(x))
-    push!(info.σ, s.σ)
-    push!(info.α, s.α)
-    push!(info.p, s.p)
-    push!(info.extrapolating, extrapolating)
+    if s.store_info
+        push!(info.x, copy(x))
+        push!(info.σ, s.σ)
+        push!(info.α, s.α)
+        push!(info.p, s.p)
+        push!(info.extrapolating, extrapolating)
+    end
     return nothing
 end
 
@@ -400,7 +400,7 @@ end
 function _speedmapping(
     x_in::AbstractArray, f, gm!, s::State, orders::Vector{Int},
     σ_min::Real, stabilize::Bool,
-    lower::Union{AbstractArray,Nothing}, upper::Union{AbstractArray,Nothing}, store_info::Bool
+    lower::Union{AbstractArray,Nothing}, upper::Union{AbstractArray,Nothing}
 )
 
     t0 = time()
@@ -450,10 +450,10 @@ function _speedmapping(
         s.p = orders[io]
         s.go_on = true
 
-        mapping!(f, gm!, xs[1], ∇s[1], s, info, x₀, lower, upper, store_info)
+        mapping!(f, gm!, xs[1], ∇s[1], s, info, x₀, lower, upper)
         update_progress!(f, s, x₀, x_best)
         for i ∈ 2:s.p
-            mapping!(f, gm!, xs[i], ∇s[i], s, info, xs[i-1], lower, upper, store_info)
+            mapping!(f, gm!, xs[i], ∇s[i], s, info, xs[i-1], lower, upper)
         end
 
         if !s.converged && s.go_on
@@ -474,9 +474,7 @@ function _speedmapping(
             else
                 extrapolate!(x₀, x₀, ∇s, s)
             end
-            if store_info
-                store_info!(info, x₀, s, true)
-            end
+            store_info!(info, x₀, s, true)
 
             if s.p > 1
                 if !s.is_map
@@ -648,7 +646,7 @@ function speedmapping(
     has_upper = upper ≠ nothing
 
     s = State{T,RealT}(; check_obj, has_obj=f ≠ nothing, is_map=m! ≠ nothing,
-        has_constr=has_lower || has_upper, maps_limit,
+        has_constr=has_lower || has_upper, maps_limit, store_info,
         time_limit, buffer, tol, Lp)
 
     if s.has_constr && !(T <: Real)
@@ -679,8 +677,7 @@ function speedmapping(
         throw(ArgumentError("if check_obj == true, f must be provided."))
     end
 
-
-    kwargs = (orders, σ_min, stabilize, lower, upper, store_info)
+    kwargs = (orders, σ_min, stabilize, lower, upper)
 
     if m! ≠ nothing
         if g! ≠ nothing
