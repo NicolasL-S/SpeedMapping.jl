@@ -411,26 +411,26 @@ function _speedmapping(
     end
 
     x₀ = copy(x_in)
-    xs = [similar(x_in) for i ∈ 1:3]
-    ∇s = [similar(x_in) for i ∈ 1:3] # Storing ∇s is equivalent to Δs, but saves comptations for gradient descent
+    xs = [similar(x₀) for i ∈ 1:3]
+    ∇s = [similar(x₀) for i ∈ 1:3] # Storing ∇s is equivalent to Δs, but saves comptations for gradient descent
 
-    x_best = similar(x_in)
+    x_best = similar(x₀)
 
     if s.has_obj && (!s.is_map || s.check_obj)
-        s.obj_now = s.obj_best = f(x_in) # Useful for initialize_α and tracking progress
+        s.obj_now = s.obj_best = f(x₀) # Useful for initialize_α and tracking progress
         s.f_calls += 1
     end
 
     if !s.is_map
-        gm!(x_best, x_in) # Here x_best acts purely as temp storage for the initial ∇ to avoid allocation. 
+        gm!(x_best, x₀) # Here x_best acts purely as temp storage for the initial ∇ to avoid allocation. 
         s.maps = -1 # To avoid double counting since we'll save the 2 first gradient evaluations
-        initialize_α!(f, gm!, s, ∇s, xs, x_in, x_best, lower, upper)
+        initialize_α!(f, gm!, s, ∇s, xs, x₀, x_best, lower, upper)
         if abs(dot(∇s[2], ∇s[1])) / abs(dot(∇s[2], ∇s[2])) < 1
             s.i_ord = length(orders) - 1
         end
     end
 
-    info = (x=[x_in], σ=[s.σ], α=[s.α], p=[0], extrapolating=[false])
+    info = (x=[copy(x₀)], σ=[s.σ], α=[s.α], p=[0], extrapolating=[false])
 
     RealT = typeof(s.σ)
     σs = zeros(RealT, 10)
