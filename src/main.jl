@@ -494,8 +494,10 @@ function _speedmapping(
 
     if s.maps > s.maps_limit
         status = :max_eval
-    elseif time() - t0 > s.time_limit
+    elseif time() - t0 ≥ s.time_limit
         status = :max_time
+    elseif _isbad(s.norm_∇)
+        status = :failure
     else
         status = :first_order
     end
