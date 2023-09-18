@@ -33,13 +33,17 @@ julia> solution = speedmapping(zeros(2); f = rosenbrock).minimizer
 
 ### The Alternating cyclic extrapolation algorithm
 
-Let *F* : ℝⁿ → ℝⁿ denote a mapping which admits continuous, bounded partial derivatives. A  *p*-order cyclic extrapolation may be expressed as
+Let $F\colon \mathbb R^n \to \mathbb R^n$ denote a mapping which admits continuous, bounded partial derivatives. A  $p$-order cyclic extrapolation may be expressed as
 
-<img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.svg">
+```math
+x_{k+1} = \sum_{i=0}^p \binom{p}{i}\left(\sigma_k^{(p)}\right)^i\Delta^i x_k, \quad p \geq 2,
+```
 where
-<img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/explanation.svg">
+```math
+\sigma_k^{(p)} = \dfrac{\left|\left\langle \Delta^p, \Delta^{p-1}\right\rangle\right|}{\|\Delta^p\|^2}, ~ \binom{p}{i} = \dfrac{p!}{i!(p-i)!}, ~ \Delta x_k = F(x_k) - x_k, ~ \textnormal{and} ~ \Delta^p x_k = \Delta^{p-1}F(x_k) - \Delta^{p-1} x_k.
+```
 
-The extrapolation step size is σ⁽ᴾ⁾ and Δᴾ follows Aitken's notation. The algorithm alternates between *p* = 3 and *p* = 2. For gradient descent acceleration, σ⁽ᴾ⁾ is used to adjust the learning rate dynamically.
+The extrapolation step size is $\sigma^{(p)}$ and $\Delta^p$ follows Aitken's notation. The algorithm alternates between $p = 3$ and $p = 2$. For gradient descent acceleration, $\sigma^{(p)}$ is used to adjust the learning rate dynamically.
 
 Reference:
 N. Lepage-Saucier, _Alternating cyclic extrapolation methods for optimization algorithms_, arXiv:2104.04974 (2021). https://arxiv.org/abs/2104.04974
