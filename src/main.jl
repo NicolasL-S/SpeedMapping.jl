@@ -629,7 +629,6 @@ julia> speedmapping(x₀; f, g!, upper = [0.5ones(4) Inf * ones(4)])
 (minimizer = [0.5 0.25; 0.5 0.24999999999999864; 0.49999999999999795 0.24999999999757333; 0.4999999999999807 0.24999999997737743], maps = 138, f_calls = 11, status = :first_order, norm_∇ = 7.140762381788846e-9, elapsed_time = 0.0, info = (x = [[-4.0 0.0; -3.0 1.0; -2.0 2.0; -1.0 3.0]], σ = [0.0], α = [0.0001220703125], p = [0], extrapolating = Bool[0]))
 ```
 """
-
 function speedmapping(
     x_in::AbstractArray; f=nothing, (g!)=nothing, (m!)=nothing,
     orders::Vector{Int}=[3, 3, 2], σ_min::Real=zero(Real),
