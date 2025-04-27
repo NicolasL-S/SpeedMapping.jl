@@ -33,13 +33,17 @@ julia> solution = speedmapping(zeros(2); f = rosenbrock).minimizer
 
 ### The Alternating cyclic extrapolation algorithm
 
-Let *F* : ℝⁿ → ℝⁿ denote a mapping which admits continuous, bounded partial derivatives. A  *p*-order cyclic extrapolation may be expressed as
+Let $F:\mathbb{R}^{n}\rightarrow\mathbb{R}^{n}$ denote a mapping which admits continuous, bounded partial derivatives. A *p*-order cyclic extrapolation may be expressed as
 
-<img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/Extra.svg">
+$$
+x_{k+1}=\sum_{i=0}^{p}\binom{p}{i}\left( \sigma _{k}^{(p)}\right) ^{i}\Delta^{i}x_{k}\text{\qquad }p\geq 2.
+$$
+
 where
-<img src="https://github.com/NicolasL-S/SpeedMapping.jl/blob/main/explanation.svg">
 
-The extrapolation step size is σ⁽ᴾ⁾ and Δᴾ follows Aitken's notation. The algorithm alternates between *p* = 3 and *p* = 2. For gradient descent acceleration, σ⁽ᴾ⁾ is used to adjust the learning rate dynamically.
+$\sigma  _{k}^{(p)}=\frac{\left\vert  \left\langle  \Delta  ^{p},\Delta^{p-1}\right\rangle  \right\vert  }{\left\Vert  \Delta  ^{p}\right\Vert  ^{2}}$, $\binom{p}{i}=\frac{p!}{i!\left( p-i\right) !},$  $\Delta ^{1}x_{k}=F\left(x_{k}\right) -x_{k}$, and $\Delta ^{p}x_{k}=$  $\Delta ^{p-1}F\left(x_{k}\right) -\Delta ^{p-1}x_{k}$.
+
+The extrapolation step size is $\sigma^{(p)}$ and $\Delta^{i}x$ follows Aitken's notation. The algorithm alternates between $p=3$ and $p=2$. For gradient descent acceleration, $\sigma^{(p)}$ is used to adjust the learning rate dynamically.
 
 Reference:
-N. Lepage-Saucier, _Alternating cyclic extrapolation methods for optimization algorithms_, arXiv:2104.04974 (2021). https://arxiv.org/abs/2104.04974
+N. Lepage-Saucier. Alternating cyclic vector extrapolation technique for accelerating nonlinear optimization algorithms and fixed-point mapping applications, _Journal of Computational and Applied Mathematics_, 439, 15 March 2024, 115607. https://www.sciencedirect.com/science/article/abs/pii/S0377042723005514
