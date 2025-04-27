@@ -35,13 +35,13 @@ julia> solution = speedmapping(zeros(2); f = rosenbrock).minimizer
 
 Let $F:\mathbb{R}^{n}\rightarrow\mathbb{R}^{n}$ denote a mapping which admits continuous, bounded partial derivatives. A *p*-order cyclic extrapolation may be expressed as
 
-$$
+```math
 x_{k+1}=\sum_{i=0}^{p}\binom{p}{i}\left( \sigma _{k}^{(p)}\right) ^{i}\Delta^{i}x_{k}\text{\qquad }p\geq 2.
-$$
+```
 
 where
 
-$\sigma  _{k}^{(p)}=\frac{\left\vert  \left\langle  \Delta  ^{p},\Delta^{p-1}\right\rangle  \right\vert  }{\left\Vert  \Delta  ^{p}\right\Vert  ^{2}}$, $\binom{p}{i}=\frac{p!}{i!\left( p-i\right) !},$  $\Delta ^{1}x_{k}=F\left(x_{k}\right) -x_{k}$, and $\Delta ^{p}x_{k}=$  $\Delta ^{p-1}F\left(x_{k}\right) -\Delta ^{p-1}x_{k}$.
+$\sigma  _{k}^{(p)}=\frac{\left\vert  \left\langle  \Delta  ^{p}$, $\Delta^{p-1}\right\rangle  \right\vert  }{\left\Vert  \Delta  ^{p}\right\Vert  ^{2}}$, $\binom{p}{i}=\frac{p!}{i!\left( p-i\right) !},$  $\Delta ^{1}x_{k}=F\left(x_{k}\right) -x_{k}$, and $\Delta ^{p}x_{k}=$  $\Delta ^{p-1}F\left(x_{k}\right) -\Delta ^{p-1}x_{k}$.
 
 The extrapolation step size is $\sigma^{(p)}$ and $\Delta^{i}x$ follows Aitken's notation. The algorithm alternates between $p=3$ and $p=2$. For gradient descent acceleration, $\sigma^{(p)}$ is used to adjust the learning rate dynamically.
 
