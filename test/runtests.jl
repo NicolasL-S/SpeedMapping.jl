@@ -1,5 +1,5 @@
 using Test
-using LinearAlgebra: Hermitian, Diagonal
+using LinearAlgebra: Hermitian, Diagonal, norm
 using SpeedMapping
 
 function f(x) # Easy Rosenbrock objective
