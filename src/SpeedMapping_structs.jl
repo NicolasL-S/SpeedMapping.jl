@@ -113,11 +113,6 @@ struct AaState{T, FT<:AbstractFloat}
     residual_norm :: FT # |Δx|
 end
 
-mutable struct AcxIndices <: FieldVector{2, Int} # Indices and counters used inside functions
-    maps :: Int # Number of maps computed
-    f_calls :: Int
-end
-
 struct SpeedMappingResult{T, FT <: AbstractFloat}
     minimizer :: T
     residual_norm :: FT # |resid|, or |∇f(x)| for optimization

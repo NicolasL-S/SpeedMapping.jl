@@ -9,10 +9,15 @@ module SpeedMapping
 	
 	# --- include ---
 	include("SpeedMapping_structs.jl")
+	include("SpeedMapping_common.jl")
 	include("acx.jl")
 	include("aa.jl")
-	include("SpeedMapping_common.jl")
 
 	# --- exports ---
 	export speedmapping
+	export AcxState
+	export AcxCache
+	export AaCache
+	export AaState
+	export SpeedMappingResult
 end
