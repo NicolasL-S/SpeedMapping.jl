@@ -5,7 +5,7 @@ module SpeedMapping
 	using LinearAlgebra
 	using StaticArrays: FieldVector
 	using ForwardDiff
-	using AccurateArithmetic: dot_oro
+	#using AccurateArithmetic: dot_oro
 	
 	# --- include ---
 	include("SpeedMapping_structs.jl")

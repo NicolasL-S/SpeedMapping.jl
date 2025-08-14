@@ -23,10 +23,11 @@ end
 end
 
 # Accurate dot product to improve the precision of extrapolations (at the cost of slightly longer compute time)
+#=
 function accurate_dot(x::T, y::T) where T<:Union{AbstractArray{Float32},AbstractArray{Float64}}
     return dot_oro(x, y)
 end
-
+=#
 accurate_dot(x, y) = dot(x,y)
 
 accurate_cdot(x, y, FT) :: FT = (eltype(x) <: Real && eltype(y) <: Real) ? accurate_dot(x, y) : real(dot(x,y))
