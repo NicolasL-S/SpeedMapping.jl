@@ -12,5 +12,5 @@ using two algorithms:
 - Alternating cyclic extrapolations (**ACX**) [Lepage-Saucier, 2024](https://www.sciencedirect.com/science/article/abs/pii/S0377042723005514)
 - Anderson Acceleration (**AA**) [Anderson, 1964](https://dl.acm.org/doi/10.1145/321296.321305)
 
-SpeedMapping provides access to recently developed algorithms, which benchmarks show are competitive 
+It provides access to recently developed algorithms, which benchmarks show are competitive 
 with Julia packages solving similar problems.
