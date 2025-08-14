@@ -1,4 +1,5 @@
 using Test
+using LinearAlgebra: Hermitian, Diagonal
 
 function f(x) # Easy Rosenbrock objective
     f_out = 0.0
