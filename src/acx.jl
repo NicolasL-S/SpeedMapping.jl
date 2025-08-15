@@ -54,7 +54,9 @@ end
     x_out::T, r::T, err::T, α::FT, x_in::T, bounds, params_F, is_map, ip, store_trace, trace, i, pnorm) where {T, FT}
 
     is_map ? (@bb @. r = x_out - x_in) : (@bb @. x_out = x_in + α * r)
-    store_trace && push!(trace, AcxState{T, FT}(copy(x_in), α, lpnorm(r, pnorm), i))
+    if store_trace
+        push!(trace, AcxState{T, FT}(copy(x_in), α, lpnorm(r, pnorm), i))
+    end
 
     @bb @. err = r
     bounds.l ≠ nothing && ((x_out, r, err) = box_constraints_and_update_resid_low!(max, x_out, r, err, x_in, bounds.l, params_F, ip, α))
@@ -75,7 +77,7 @@ function acx(
     ip = (m! !== nothing || g! !== nothing) # In place
     
     if ip
-        (x_now, x_next, x_best, r1, r2, r3) = (c.x_now, c.x_next, c.x_best, c.rs[1], c.rs[2], c.rs[3])
+        (x_now, x_next, x_best, err, r1, r2, r3) = (c.x_now, c.x_next, c.x_best, c.err, c.rs[1], c.rs[2], c.rs[3])
         x_now .= x_in
     else
         x_now = x_in
@@ -84,7 +86,7 @@ function acx(
     bounds.l ≠ nothing && (@bb @. x_now = max(bounds.l, x_now))
     bounds.u ≠ nothing && (@bb @. x_now = min(bounds.u, x_now))
     
-    !ip && (x_next = x_best = r1 = r2 = r3 = r_now = x_now)
+    !ip && (x_next = x_best = err = r1 = r2 = r3 = r_now = x_now)
     
     reltol_rr = min(reltol_resid_grow^2, prevfloat(typemax(FT)))
     
@@ -113,7 +115,6 @@ function acx(
         next iterate should have value f(x_next) > f(x_now) - 0.8⋅|∇f(x_now)|².
     =#
 
-    err = ip ? similar(x_in) : x_in # Put in parameters
     if !is_map && initialize_learning_rate # Initializing α
         check_obj = f !== nothing 
         if check_obj
@@ -235,8 +236,11 @@ function acx(
         else
 
             # Extrapolating (from x_now)
-            @bb @. x_now += p == 2 ? (FT(-2) * α * (FT(1) + σ)) * r1 + (α *(FT(-1) + σ^2)) * r2 : # Squared extrapolation
-                (FT(-3) * α * (FT(1) + σ)) * r1 + (FT(-3) * α * (FT(1) - σ^2)) * r2 + (-α * (FT(1) + σ^3)) * r3  # Cubic extrapolation
+            if p == 2
+                @bb @. x_now += (FT(-2) * α * (FT(1) + σ)) * r1 + (α *(FT(-1) + σ^2)) * r2 # Squared extrapolation
+            else
+                @bb @. x_now += (FT(-3) * α * (FT(1) + σ)) * r1 + (FT(-3) * α * (FT(1) - σ^2)) * r2 + (-α * (FT(1) + σ^3)) * r3  # Cubic extrapolation
+            end
             x_now = box_constraint!(x_now, x_best, bounds, buffer, ip)
 
             # Updating α

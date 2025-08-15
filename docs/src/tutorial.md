@@ -1,3 +1,7 @@
+```@meta
+EditURL = "tutorial.jl"
+```
+
 `speedmapping(x0; kwargs...)`  solves three types of problems:
 1. [Accelerating convergent mapping iterations](#Accelerate-convergent-mapping-iterations)
 2. [Solving non-linear systems of equations](#Solve-non-linear-systems-of-equations)
@@ -20,12 +24,11 @@ convergence. If $F$ does not converge, the problem can simply be redefined as
 
 Let's find the dominant eigenvalue of a matrix $A$ using the accelerated [Power iteration](https://en.wikipedia.org/wiki/Power_iteration).
 
-````julia
-#using StaticArrays, BenchmarkTools
-using BenchmarkTools
+````@example tutorial
+using LinearAlgebra
 
 n = 10;
-A = ones(n,n) .+ Diagonal(1:n)
+A = ones(n,n) .+ Diagonal(1:n);
 
 # An in-place mapping function to avoid allocations
 function power_iteration!(xout, xin, A)
@@ -37,30 +40,39 @@ function power_iteration!(xout, xin, A)
     xout ./= maxabs
 end;
 x0 = ones(n);
+nothing #hide
 ````
 
 Speedmapping has one mandatory argument: the starting point ``x0``. The mapping is specified with the keyword argument ``m!``.
 
-````julia
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A))
+````@example tutorial
+using SpeedMapping
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A));
+display(res)
+````
 
+The dominant eigenvalue is:
+
+````@example tutorial
 v = res.minimizer; ## The dominant eigenvector
-dominant_eigenvalue = v'A*v/v'v
+dominant_eigenvalue = v'A*v/v'v;
 eigen(A).values[10] ≈ dominant_eigenvalue
 ````
 
 With `m!`, the default algorithm is `algo = :acx`. To switch, set `algo = :aa`.
 
-````julia
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa)
+````@example tutorial
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa);
+nothing #hide
 ````
 
 By default, **AA** uses [adaptive relaxation](https://arxiv.org/abs/2408.16920), which can
 reduce the number of iterations. It is specified by the keyword argument
 `adarel = :minimum_distance`. For constant relaxation, set `adarel = :none`.
 
-````julia
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarel = :none)
+````@example tutorial
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarel = :none);
+nothing #hide
 ````
 
 Another recent development for **AA** is **Composite AA** by [Chen and Vuik, 2022](https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096).
@@ -68,9 +80,10 @@ A one-step **AA** iteration (using 2 maps) is inserted between 2 full **AA** ste
 the computation and can speed-up some applications. The default is
 `composite = :none`. Two versions are available:
 
-````julia
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :aa1)
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :acx2)
+````@example tutorial
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :aa1);
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :acx2);
+nothing #hide
 ````
 
 Some mapping iterations maximize or minimize a certain objective function. Since some **AA** steps
@@ -79,11 +92,12 @@ can be done by supplying an objective function (assumed to be a minimization
 problem) using `f` as keyword argument. Here is an illustrative example
 using the [EM-algorithm](https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm).
 
-````julia
+````@example tutorial
 using FixedPointTestProblems
-EMx0, EMmap!, EMobj = problems["Hasselblad, Poisson mixtures"]()
-speedmapping(EMx0; m! = EMmap!, algo = :aa)
-speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa)
+EMx0, EMmap!, EMobj = testproblems["Hasselblad, Poisson mixtures"]();
+speedmapping(EMx0; m! = EMmap!, algo = :aa);
+speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa);
+nothing #hide
 ````
 
 ## Avoiding memory allocation
@@ -91,9 +105,10 @@ speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa)
 For similar problems solved many times, it is possible to preallocate working
 memory and feed it using the `cache` keyword argument. Each algorithm has its own cache:
 
-````julia
-acx_cache = AcxCache(x0)
-aa_cache = AaCache(x0)
+````@example tutorial
+acx_cache = AcxCache(x0);
+aa_cache = AaCache(x0);
+nothing #hide
 ````
 
 Note that ``x0`` must still be supplied to speedmapping.
@@ -102,41 +117,44 @@ For small-sized problems with **ACX**, heap-allocation can be avoided by supplyi
 or a tuple as starting point and using the keyword argument `m` for the mapping function, offering
 additional speed gains.
 
-````julia
+````@example tutorial
 using StaticArrays
 
 function power_iteration(xin, A)
-    xout = A * xin
-    maxabs = 0.
+    xout = A * xin;
+    maxabs = 0.;
     for xi in xout
-        abs(xi) > maxabs && (max_abs = abs(xi))
-    end
-    return xout / maxabs
+        abs(xi) > maxabs && (maxabs = abs(xi))
+    end;
+    return xout / maxabs;
 end;
 
 As = @SMatrix ones(n,n);
 As += Diagonal(1:n);
 x0s = @SVector ones(n);
 
-speedmapping(x0s; m = x -> power_iteration(x, As))
+speedmapping(x0s; m = x -> power_iteration(x, As));
+nothing #hide
 ````
 
 Comparing speed gains
 
-````julia
+````@example tutorial
 using BenchmarkTools
-@benchmark eigen($A)
-@benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A)) # Allocating
-@benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache) # Pre-allocated
-@benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)) # Non allocating
+t_eigen = @benchmark eigen($A)
+t_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A)); # Allocating
+t_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache); # Pre-allocated
+t_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)) # Non allocating
+[median(t) for t in (t_eigen, t_alloc, t_prealloc, t_nonalloc)]
 ````
 
 ## Working with scalars
 
 `m` also accepts scalar functions.
 
-````julia
-speedmapping(0.5; m = cos)
+````@example tutorial
+speedmapping(0.5; m = cos);
+nothing #hide
 ````
 
 # Solving non linear systems of equations
@@ -145,13 +163,14 @@ For non-linear systems of equations (finding $x^*$ such that $G(x^*) = 0$), only
 constant relaxation should be used (and is set by default). The keyword argument to supply $G$ is
 `r!`.
 
-````julia
+````@example tutorial
 function r!(res, x)
-	res[1] = x[1]^2
-	res[2] = (x[2] + x[1])^3
+	res[1] = x[1]^2;
+	res[2] = (x[2] + x[1])^3;
 end
 
-speedmapping([1.,2.]; r! = r!)
+speedmapping([1.,2.]; r! = r!);
+nothing #hide
 ````
 
 # Minimizing a function
@@ -161,58 +180,61 @@ the keyword arguments `f` and `g!`. The Hessian cannot be supplied.
 Compared to other quasi-Newton algorithms like L-BFGS, **ACX** iterations are very fast, but the
 algorithm may struggle for ill-conditioned problems.
 
-````julia
-f_Rosenbrock(x) = 100 * (x[1]^2 - x[2])^2 + (x[1] - 1.)^2
+````@example tutorial
+f_Rosenbrock(x) = 100 * (x[1]^2 - x[2])^2 + (x[1] - 1.)^2;
 
 function g_Rosenbrock!(grad, x) # Rosenbrock gradient
-	grad[1] = 400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1)
-	grad[2] = -200 * (x[1]^2 - x[2])
+	grad[1] = 400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1);
+	grad[2] = -200 * (x[1]^2 - x[2]);
 end
 
-speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!)
+speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!);
+nothing #hide
 ````
 
 The function objective is only used to compute a safer initial learning rate. It can be omitted.
 
-````julia
-speedmapping([-1.2, 1.]; g! = g_Rosenbrock!)
+````@example tutorial
+speedmapping([-1.2, 1.]; g! = g_Rosenbrock!);
+nothing #hide
 ````
 
 If only the objective is supplied, the gradient is computed using using ForwardDiff.
 
-````julia
-speedmapping([-1.2, 1.]; f = f_Rosenbrock)
+````@example tutorial
+speedmapping([-1.2, 1.]; f = f_Rosenbrock);
+nothing #hide
 ````
 
 The keyword argument g can be used with static arrays or tuple to supply a non-allocating gradient.
 
-````julia
+````@example tutorial
 using StaticArrays
-g_Rosenbrock(x :: StaticArray) = SA[400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2])]
-speedmapping(SA[-1.2, 1.]; g = g_Rosenbrock)
+g_Rosenbrock(x :: StaticArray) = SA[400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2])];
+speedmapping(SA[-1.2, 1.]; g = g_Rosenbrock);
 
-g_Rosenbrock(x :: Tuple) = (400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2]))
-speedmapping((-1.2, 1.); g = g_Rosenbrock)
+g_Rosenbrock(x :: Tuple) = (400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2]));
+speedmapping((-1.2, 1.); g = g_Rosenbrock);
+nothing #hide
 ````
 
 Scalar functions can also be supplied. E.g. $f(x) = e^x + x^2$
 
-````julia
-speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x)
+````@example tutorial
+speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x);
+nothing #hide
 ````
 
 ## Adding box constraint
 
 An advantage of **ACX** is that constraints on parameters have little impact on estimation speed.
 They are added with the keyword arguments `lower` and `upper` (`= nothing` by default). The
-starting point does not need to be in the feasible domain.
+starting point does not need to be in the feasible domain, but, if supplied, upper / lower need
+to be of type x0.
 
-````julia
-speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf])
-speedmapping(0.; g = x -> exp(x) + 2x, upper = -1)
+````@example tutorial
+speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf]);
+speedmapping(0.; g = x -> exp(x) + 2x, upper = -1.);
+nothing #hide
 ````
-
----
-
-*This page was generated using [Literate.jl](https://github.com/fredrikekre/Literate.jl).*
 

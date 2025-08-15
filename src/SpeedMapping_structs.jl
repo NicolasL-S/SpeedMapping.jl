@@ -9,6 +9,7 @@ mutable struct AcxCache{T <: AbstractArray}
     x_now :: T  # Mutable since we may swap pointers
     x_next :: T # Mutable since we may swap pointers
     x_best :: T # Mutable since we may swap pointers
+    const err :: T
     const rs :: Tuple{T, T, T}
 end
 
@@ -16,7 +17,7 @@ end
 Preallocates memory for the :acx algorithm based in the starting point.
 """
 function AcxCache(x0 :: T) :: AcxCache{T} where T <: AbstractArray
-    return AcxCache{T}(similar(x0), similar(x0), similar(x0), 
+    return AcxCache{T}(similar(x0), similar(x0), similar(x0), similar(x0), 
         (similar(x0), similar(x0), similar(x0)))
 end
 

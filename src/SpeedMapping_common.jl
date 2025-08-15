@@ -128,7 +128,7 @@ function speedmapping(
         x0 :: T; f :: FN = nothing, g! :: FN = nothing, g :: FN = nothing, m! :: FN = nothing, 
         m :: FN = nothing, r! :: FN = nothing, algo::Symbol = r! !== nothing ? :aa : :acx, # Note: we don't use r because static arrays are not implemented for aa 
         cache :: Union{AcxCache, AaCache, Nothing} = nothing, 
-        orders = (2,3,3), initial_learning_rate :: Real = 1., initialize_learning_rate :: Bool = true,
+        orders :: Tuple = (2,3,3), initial_learning_rate :: Real = 1., initialize_learning_rate :: Bool = true,
         lags :: Integer = 30, condition_max :: Real = 1e6, rel_default :: Real = 1., 
         adarel :: Symbol = m! !== nothing ? :minimum_distance : :none, composite :: Symbol = :none, 
         abstol :: AbstractFloat = 1e-8, pnorm :: Real = 2., 
