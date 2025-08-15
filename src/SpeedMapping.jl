@@ -1,3 +1,6 @@
+"""
+$(read(joinpath(@__DIR__, "README.md"), String))
+"""
 module SpeedMapping
 
 	# --- using ---

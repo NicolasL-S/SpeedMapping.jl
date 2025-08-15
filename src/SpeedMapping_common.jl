@@ -70,6 +70,8 @@ function assess_status(iter_budget, maps_budget, max_time, converged)
     return :failure
 end
 
+FN = Union{Function, Nothing}
+
 """
 `speedmapping(x0; kwargs...)`  implements two algorithms:
 - Alternating cyclic extrapolations (**ACX**) [Lepage-Saucier, 2024](https://www.sciencedirect.com/science/article/abs/pii/S0377042723005514)
@@ -122,8 +124,6 @@ speedmapping([1.,1.]; g!  =  (grad, x)  -> grad .= 4x.^3, lower = [-Inf, 2.])
 - Affecting **acx**: `orders`, `initial_learning_rate`
 - Affecting **aa**: `lags`, `condition_max`, `adarel`, `rel_default`, `composite`, `abstol_obj_grow`
 """
-
-FN = Union{Function, Nothing}
 function speedmapping(
         x0 :: T; f :: FN = nothing, g! :: FN = nothing, g :: FN = nothing, m! :: FN = nothing, 
         m :: FN = nothing, r! :: FN = nothing, algo::Symbol = r! !== nothing ? :aa : :acx, # Note: we don't use r because static arrays are not implemented for aa 
