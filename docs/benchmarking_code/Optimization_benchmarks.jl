@@ -2,31 +2,45 @@
 # by tayloring the ad to each specific problem like in ... Interestingly, the NonlinearSolve, Default PolyAlg. did
 # solve all 23 problems.
 
-using BenchmarkTools, Optim, JLD2, FileIO, SpeedMapping, ArtificialLandscapes
+using BenchmarkTools, Optim, JLD2, FileIO, SpeedMapping, ArtificialLandscapes, LinearAlgebra, Logging, LBFGSB
 
-path_out = ""
+ArtificialLandscapes.check_gradient_indices(gradient, x) = nothing # Very bad! But necessary for LBFGSB
 
-include("Benchmarking_utils.jl")
+absolute_path = ""
+path_plots = absolute_path*"assets/"
+path_out = absolute_path*"benchmarking_code/Output/"
+
+include(absolute_path * "benchmarking_code/Benchmarking_utils.jl")
+
+Logging.disable_logging(Logging.Warn)
+
+macro noprint(expr)
+	quote
+		let so = stdout
+			redirect_stdout(devnull)
+			res = $(esc(expr))
+			redirect_stdout(so)
+			res
+		end
+	end
+end
+
 
 # Solver wrappers
 optim_solvers = Dict{AbstractString, Function}()
-optim_solvers_lower = Dict{AbstractString, Function}() # With lower bound
+optim_solvers_constr = Dict{AbstractString, Function}() # With upper bound
 
-function Speedmapping_optim_wrapper(problem, abstol, maps_limit, time_limit, add_lower)
+function Speedmapping_optim_wrapper(problem, abstol, maps_limit, time_limit, add_upper)
 	x0, obj, grad! = problem
-	if add_lower
-		lower = x0 .- 1
-		lower[1:(length(lower) ÷ 2)] .= -Inf
-	else
-		lower = nothing
-	end
-	res = speedmapping(x0; g! = grad!, f = obj, maps_limit, abstol, pnorm = Inf, time_limit, lower)
+	upper = add_upper ? x0 .+ 0.5 : nothing
+	res = speedmapping(x0; g! = grad!, f = obj, maps_limit, abstol, pnorm = Inf, time_limit, upper)
 	return res.minimizer, res.maps, string(res.status)
 end
+
 optim_solvers["Speedmapping, acx"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
 	Speedmapping_optim_wrapper(problem, abstol, maps_limit, time_limit, false)
 
-optim_solvers_lower["Speedmapping, acx"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
+optim_solvers_constr["Speedmapping, acx"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
 	Speedmapping_optim_wrapper(problem, abstol, maps_limit, time_limit, true)
 
 function Optim_wrapper(problem, abstol, maps_limit, time_limit, algo)
@@ -36,29 +50,65 @@ function Optim_wrapper(problem, abstol, maps_limit, time_limit, algo)
 		time_limit = time_limit, iterations = 100_000_000))
 	return res.minimizer, res.g_calls, string(res.termination_code)
 end
-								
+
 optim_solvers["Optim, LBFGS"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
 	Optim_wrapper(problem, abstol, maps_limit, time_limit, LBFGS())
 
 optim_solvers["Optim, ConjugateGradient"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
 	Optim_wrapper(problem, abstol, maps_limit, time_limit, ConjugateGradient())
 
-function Optim_wrapper_lower(problem, abstol, maps_limit, time_limit, algo)
+function Optim_wrapper_constr(problem, abstol, maps_limit, time_limit, algo)
 	x0, obj, grad! = problem
-	upper = Inf*ones(length(x0))
-	lower = x0 .- 1
-	lower[1:(length(lower) ÷ 2)] .= -Inf
-	res = optimize(obj, grad!, lower, upper, x0, Fminbox(algo), Optim.Options(x_abstol = NaN, 
-		x_reltol = NaN, f_abstol = NaN, f_reltol = NaN, g_abstol = abstol, 
-		g_calls_limit = maps_limit, time_limit = time_limit, iterations = 100_000_000))
-	return res.minimizer, res.g_calls, string(res.termination_code)
+	upper = x0 .+ 0.5
+	lower = -Inf .* ones(length(x0))
+	try
+		res = optimize(obj, grad!, lower, upper, x0, Fminbox(algo), Optim.Options(x_abstol = NaN, 
+			x_reltol = NaN, f_abstol = NaN, f_reltol = NaN, g_abstol = abstol, 
+			g_calls_limit = maps_limit, time_limit = time_limit, iterations = 100_000_000))
+		return res.minimizer, res.g_calls, string(res.termination_code)
+	catch e # To catch errors in line search
+		return NaN .* ones(length(x0)), 0, sprint(showerror, typeof(e))
+	end
 end
 
-optim_solvers_lower["Optim, LBFGS"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
-	Optim_wrapper_lower(problem, abstol, maps_limit, time_limit, LBFGS())
+optim_solvers_constr["Optim, LBFGS"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
+	Optim_wrapper_constr(problem, abstol, maps_limit, time_limit, LBFGS())
 
-optim_solvers_lower["Optim, ConjugateGradient"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
-	Optim_wrapper_lower(problem, abstol, maps_limit, time_limit, ConjugateGradient())
+optim_solvers_constr["Optim, ConjugateGradient"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
+	Optim_wrapper_constr(problem, abstol, maps_limit, time_limit, ConjugateGradient())
+
+function _grad!(grad!, gradient, x, gevals, timesup)
+	gevals[] += 1
+	if time() < timesup
+		grad!(gradient, x)
+	else
+		gradient .= 0 # To trick the solver into thinking it has reached the minimum
+	end
+	return gradient
+end
+
+optimizer = L_BFGS_B(10000, 10) # 10000 is the maximum problem size, 10 is the number of past lags used for LBFGS (same as Optim's default)
+
+function LBFGSB_wrapper(problem, abstol, maps_limit, time_limit, optimizer)
+	x0, obj, grad! = problem
+	n = length(x0)
+	bounds = Matrix{Float64}(undef, 3, n)
+	bounds[1,:] .= 3 # 3 means only upper bound
+	bounds[2,:] .= -Inf # The lower bounds
+	bounds[3,:] .= x0 .+ 0.5 # The upper bounds
+	gevals = Ref(0)
+	timesup = time() + time_limit
+	try
+		fout, xout = @noprint optimizer(obj, (gradient, x) -> _grad!(grad!, gradient, x, gevals, timesup), x0, 
+			bounds, m = 10, factr = 0., pgtol = abstol, iprint=-1, maxfun = maps_limit, maxiter = 100_000_000)
+		return xout, gevals[], ""
+	catch e # To catch errors in line search
+		return NaN .* ones(length(x0)), gevals[], sprint(showerror, typeof(e))
+	end
+end
+
+optim_solvers_constr["LBFGSB"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
+	LBFGSB_wrapper(problem, abstol, maps_limit, time_limit, optimizer)
 
 optim_prob_sizes = Dict{String, Int}()
 for (name, gen_problem) in landscapes
@@ -68,6 +118,7 @@ end
 order_length = sortperm([l for (name, l) in optim_prob_sizes])
 optim_problems_names = [name for (name, l) in optim_prob_sizes][order_length]
 optim_solver_names = sort([name for (name, wrapper) in optim_solvers])
+optim_solver_constr_names = sort([name for (name, wrapper) in optim_solvers_constr])
 
 gen_Feval_limit(problem, time_limit) = 1_000_000 
 
@@ -81,893 +132,770 @@ function compute_norm(problem, solution)
 	end
 end
 
-function compute_norm_cons(problem, solution)
+function compute_norm_constr(problem, solution)
 	gout = similar(solution)
 	if sum(_isbad.(solution)) == 0
 		problem.grad!(gout, solution)
-		for i in (length(gout) ÷ 2 + 1):length(gout)
-			abs(solution[i] - (problem.x0[i] - 1)) < 1e-7 && (gout[i] = 0)
+		comment = "Non-binding"
+		for i in eachindex(gout)
+			if abs(solution[i] - (problem.x0[i] + 0.5)) < 1e-7 && gout[i] < 0
+				gout[i] = 0
+				comment = "Binding"
+			end
 		end
-		norm(gout, Inf)
+		return norm(gout, Inf), comment
 	else
-		NaN
+		NaN, ""
 	end
 end
 
 res_optim_all = many_problems_many_solvers(landscapes, optim_solvers, optim_problems_names, 
-	optim_solver_names,	compute_norm; tunits = 3, F_name = "Grad evals", gen_Feval_limit, 
-	abstol = 1e-7, time_limit = 100., proper_benchmark = true)
-
-res_maps_all = many_problems_many_solvers(fixed_point_problems, fixed_point_solvers, problems_names, 
-	solver_names, compute_norm; tunits = time_units, F_name = "maps", gen_Feval_limit, 
-	abstol = abstols, time_limit = time_limits, proper_benchmark = true)
+	optim_solver_names,	compute_norm; tunits = 3, F_name = "Grad evals", abstol = 1e-7, 
+	time_limit = 100., proper_benchmark = true)
 
 JLD2.@save path_out*"res_optim.jld2" res_optim_all
 title = "Performance profiles for non-linear, unconstrained optimization"
-perf_profiles(res_optim_all, title, path_out*"perf_optim.svg", optim_solver_names; sizef = (640, 480), stat_num = 2, max_fact = 8)
+perf_profiles(res_optim_all, title, path_plots*"optimization_performance.svg", optim_solver_names; sizef = (640, 480), stat_num = 2, max_fact = 8)
 
-res_all_cons = many_problems_many_solvers(landscapes, optim_solvers_lower, optim_problems_names, 
-	optim_solver_names, compute_norm_cons; tunit = 3, abstol = 1e-7, time_limit = 100., 
-	gen_maps_limit = gen_maps_limit)
-	
-JLD2.@save path_out*"res_optim_cons.jld2" res_all_cons
+res_all_constr = [Dict{String, Tuple{Float64, Float64}}() for i in eachindex(optim_problems_names)]
+res_all_constr = many_problems_many_solvers(landscapes, optim_solvers_constr, optim_problems_names, 
+	optim_solver_constr_names, compute_norm_constr; tunits = 3, F_name = "Grad evals", abstol = 1e-7, 
+	time_limit = 100., proper_benchmark = true, results = res_all_constr, problem_start = 1)
+
+JLD2.@save path_out*"res_optim_constr.jld2" res_all_cons
 title = "Performance profiles for non-linear, box-constriained optimization"
-perf_profiles(res_all_cons, title, path_out*"perf_optim_cons.svg", optim_solver_names; sizef = (640, 480), stat_num = 2, max_fact = 8)
+perf_profiles(res_all_constr, title, path_plots*"perf_optim_constr.svg", optim_solver_names; sizef = (640, 480), stat_num = 2, max_fact = 8)
 
 #= Unconstrained output
 CLIFF: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      149       35.08μs  true 3.712e-08        GradientNorm 0.1997866
-Optim, LBFGS                  106       16.59μs  true 2.217e-09        GradientNorm 0.1997866
-Speedmapping, acx             391       12.31μs  true 1.929e-11         first_order 0.1997866
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        149       32.76μs  true 3.712e-08        GradientNorm      0.19978661367773198
+Optim, LBFGS                    106       16.55μs  true 2.217e-09        GradientNorm      0.19978661367769956
+Speedmapping, acx               552       14.81μs  true 1.175e-09         first_order      0.19978661367769956
 
 BEALE: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       18        8.91μs  true 1.517e-08        GradientNorm 4.3098755
-Optim, LBFGS                   33        8.97μs  true 1.358e-10        GradientNorm 3.2288345
-Speedmapping, acx              58        3.31μs  true 2.916e-09         first_order 9.2250572
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         18        9.08μs  true 1.517e-08        GradientNorm    4.309875521967506e-18
+Optim, LBFGS                     33       10.79μs  true 1.358e-10        GradientNorm   3.2288345955802687e-22
+Speedmapping, acx                58        2.08μs  true 1.515e-08         first_order   2.4873805095533573e-18
 
 MISRA1BLS: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      184       57.79μs  true 2.477e-09        GradientNorm 0.0754646
-Optim, LBFGS                  158       48.28μs  true 5.146e-08        GradientNorm 0.0754646
-Speedmapping, acx         1000001   126770.97μs false 5.933e-02            max_eval 7.3148029
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        184       54.99μs  true 2.477e-09        GradientNorm      0.07546468153344021
+Optim, LBFGS                    158       40.71μs  true 5.146e-08        GradientNorm      0.07546468153341979
+Speedmapping, acx            100002     9976.86μs false 5.933e-02      Fevals > limit       7.3170150660192546
 
 Hosaki: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       12        5.15μs  true 8.225e-08        GradientNorm -2.345811
-Optim, LBFGS                   17        5.03μs  true 1.769e-11        GradientNorm -2.345811
-Speedmapping, acx              15        1.14μs  true 7.278e-09         first_order -2.345811
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         12        5.69μs  true 8.225e-08        GradientNorm       -2.345811576101281
+Optim, LBFGS                     17        6.28μs  true 1.769e-11        GradientNorm      -2.3458115761012914
+Speedmapping, acx                15        1.00μs  true 7.278e-09         first_order       -2.345811576101292
 
 MISRA1ALS: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      257      100.49μs  true 2.403e-09        GradientNorm 0.1245513
-Optim, LBFGS                  189       68.47μs  true 2.753e-08        GradientNorm 0.1245513
-Speedmapping, acx         1000001   108513.12μs false 6.669e-02            max_eval 19.514350
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        257       84.03μs  true 2.403e-09        GradientNorm      0.12455138894439657
+Optim, LBFGS                    189       65.82μs  true 2.753e-08        GradientNorm      0.12455138894440893
+Speedmapping, acx            100000     9053.49μs false 6.668e-02            max_eval       19.515847902427694
 
 Six-hump camel: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        9        4.48μs  true 1.731e-08        GradientNorm -1.031628
-Optim, LBFGS                   27        8.99μs  true 5.170e-13        GradientNorm -1.031628
-Speedmapping, acx              26        1.38μs  true 4.941e-10         first_order -1.031628
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          9        4.91μs  true 1.731e-08        GradientNorm      -1.0316284534898774
+Optim, LBFGS                     27        8.89μs  true 5.170e-13        GradientNorm      -1.0316284534898774
+Speedmapping, acx                26        2.00μs  true 4.941e-10         first_order      -1.0316284534898772
 
 Himmelblau: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       12        4.74μs  true 2.230e-10        GradientNorm 3.9234349
-Optim, LBFGS                   22        6.47μs  true 2.986e-10        GradientNorm 8.8104899
-Speedmapping, acx              18        1.11μs  true 8.851e-08         first_order 1.7844827
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         12        5.63μs  true 2.230e-10        GradientNorm   3.9234349347561203e-22
+Optim, LBFGS                     22        7.42μs  true 2.986e-10        GradientNorm     8.81048998674334e-22
+Speedmapping, acx                18        1.06μs  true 8.851e-08         first_order   1.7844827490094893e-16
 
 ROSENBR: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       63       20.86μs  true 2.320e-09        GradientNorm 1.2960162
-Optim, LBFGS                   78       21.14μs  true 2.162e-08        GradientNorm 4.4351302
-Speedmapping, acx              89        3.88μs  true 8.144e-09         first_order 1.0370723
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         63       26.77μs  true 2.320e-09        GradientNorm   1.2960162126384444e-18
+Optim, LBFGS                     78       23.68μs  true 2.162e-08        GradientNorm    4.435130255645974e-19
+Speedmapping, acx                72        2.36μs  true 9.582e-08         first_order   1.4356892863641826e-14
 
 Fletcher-Powell: 3 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       70       41.91μs  true 9.457e-08        GradientNorm 3.3859550
-Optim, LBFGS                   65       19.33μs  true 3.646e-10        GradientNorm 2.6185772
-Speedmapping, acx              58        3.70μs  true 1.496e-09         first_order 5.5947326
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         70       44.70μs  true 9.457e-08        GradientNorm    3.385955053393419e-15
+Optim, LBFGS                     65       18.77μs  true 3.646e-10        GradientNorm   2.6185772486779363e-22
+Speedmapping, acx                58        2.74μs  true 1.500e-09         first_order    5.626333277455105e-21
 
 Perm 2: 4 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      116       70.59μs  true 7.727e-08        GradientNorm 0.0108838
-Optim, LBFGS                   96       62.60μs  true 1.445e-08        GradientNorm 0.0108838
-Speedmapping, acx             146       23.37μs  true 8.282e-08         first_order 0.0108838
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        116       73.39μs  true 7.727e-08        GradientNorm     0.010883889811628935
+Optim, LBFGS                     96       48.99μs  true 1.445e-08        GradientNorm     0.010883889811626983
+Speedmapping, acx               146       23.32μs  true 8.265e-08         first_order     0.010883889811629365
 
 Powell: 4 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     4529     1850.10μs  true 9.959e-08        GradientNorm 9.2535349
-Optim, LBFGS                   88       33.13μs  true 1.170e-08        GradientNorm 1.3862788
-Speedmapping, acx             344       15.16μs  true 9.136e-08         first_order 6.0544046
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       4529     1729.90μs  true 9.959e-08        GradientNorm    9.253534937630595e-13
+Optim, LBFGS                     88       24.93μs  true 1.170e-08        GradientNorm   1.3862788161000863e-13
+Speedmapping, acx               295       11.48μs  true 8.817e-08         first_order   1.1633480105133248e-10
 
 PALMER5D: 4 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       15        8.22μs  true 3.284e-09        GradientNorm 87.339399
-Optim, LBFGS                   16        6.60μs  true 1.717e-09        GradientNorm 87.339399
-Speedmapping, acx              63        6.67μs  true 6.846e-08         first_order 87.339399
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         15        6.72μs  true 3.284e-09        GradientNorm        87.33939952784888
+Optim, LBFGS                     16        6.76μs  true 1.717e-09        GradientNorm        87.33939952784839
+Speedmapping, acx                45        4.38μs  true 3.961e-09         first_order        87.33939952784901
 
 LANCZOS2LS: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     1502     1831.19μs  true 8.262e-08        GradientNorm 8.4621513
-Optim, LBFGS                  211      184.90μs  true 1.702e-08        GradientNorm 4.2982208
-Speedmapping, acx            2359      822.32μs  true 6.739e-08         first_order 4.2985004
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       1502     1681.89μs  true 8.262e-08        GradientNorm     8.462151327901949e-8
+Optim, LBFGS                    211      174.00μs  true 1.702e-08        GradientNorm     4.298220881281585e-6
+Speedmapping, acx               802      257.20μs  true 7.559e-08         first_order    4.2985607561031815e-6
 
 PALMER5C: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        8        5.56μs  true 1.046e-11        GradientNorm 2.1280866
-Optim, LBFGS                   16        8.60μs  true 2.709e-14        GradientNorm 2.1280866
-Speedmapping, acx              28        3.58μs  true 2.988e-08         first_order 2.1280866
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          8        5.39μs  true 1.046e-11        GradientNorm       2.1280866660550926
+Optim, LBFGS                     16        8.52μs  true 2.709e-14        GradientNorm       2.1280866660551125
+Speedmapping, acx                28        3.32μs  true 2.988e-08         first_order       2.1280866660551143
 
 LANCZOS1LS: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      803      927.79μs  true 8.388e-08        GradientNorm 9.6593453
-Optim, LBFGS                  213      184.01μs  true 2.157e-08        GradientNorm 4.2906202
-Speedmapping, acx            1715      593.27μs  true 9.954e-08         first_order 4.2913752
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        803      866.60μs  true 8.388e-08        GradientNorm      9.65934530197198e-8
+Optim, LBFGS                    213      185.08μs  true 2.157e-08        GradientNorm     4.290620207523742e-6
+Speedmapping, acx              1402      557.75μs  true 8.871e-08         first_order     4.290642085545953e-6
 
 LANCZOS3LS: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      512      530.95μs  true 6.796e-08        GradientNorm 1.2691850
-Optim, LBFGS                  218      184.60μs  true 1.232e-08        GradientNorm 4.3465532
-Speedmapping, acx            1538      523.03μs  true 8.688e-08         first_order 4.3465539
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        512      595.20μs  true 6.796e-08        GradientNorm    1.2691850872962035e-7
+Optim, LBFGS                    218      206.32μs  true 1.232e-08        GradientNorm     4.346553278382654e-6
+Speedmapping, acx              1535      498.22μs  true 6.674e-08         first_order     4.346854756861299e-6
 
 BIGGS6: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      462      356.87μs  true 8.487e-08        GradientNorm 0.0056556
-Optim, LBFGS                   88       50.49μs  true 1.495e-09        GradientNorm 0.0056556
-Speedmapping, acx             476       97.65μs  true 9.643e-09         first_order 0.0056556
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        462      365.99μs  true 8.487e-08        GradientNorm     0.005655649926147886
+Optim, LBFGS                     88       51.37μs  true 1.495e-09        GradientNorm    0.0056556499254999375
+Speedmapping, acx               503       96.99μs  true 2.576e-08         first_order     0.005655649927930996
 
 THURBERLS: 7 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient    29324    13737.27μs  true 9.899e-08        GradientNorm 5642.7082
-Optim, LBFGS                  233       95.07μs  true 2.145e-08        GradientNorm 5642.7082
-Speedmapping, acx            1446      125.38μs  true 6.588e-09         first_order 3.4166736
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient      29324    14197.15μs  true 9.899e-08        GradientNorm         5642.70823966697
+Optim, LBFGS                    233       94.09μs  true 2.145e-08        GradientNorm        5642.708239666975
+Speedmapping, acx              1180       84.32μs  true 7.383e-08         first_order      3.424145183791597e7
 
 HAHN1LS: 7 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        2        3.35μs  true 2.065e-09        GradientNorm 55530.953
-Optim, LBFGS                    2        3.72μs  true 2.065e-10        GradientNorm 55530.953
-Speedmapping, acx               4        2.27μs  true 2.065e-10         first_order 55530.953
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          2        3.40μs  true 2.065e-09        GradientNorm       55530.953492718145
+Optim, LBFGS                      2        4.13μs  true 2.065e-10        GradientNorm       55530.953492718145
+Speedmapping, acx                 4        2.15μs  true 2.065e-10         first_order       55530.953492718145
 
 PALMER1D: 7 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   105782    58711.62μs  true 7.034e-08        GradientNorm 0.6526825
-Optim, LBFGS                   37       14.45μs  true 5.637e-09        GradientNorm 0.6526825
-Speedmapping, acx         1000000   154213.74μs false 1.026e+01            max_eval 4.9193253
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000    57221.06μs false 1.540e-04       GradientCalls       0.6526825943754183
+Optim, LBFGS                     37       14.33μs  true 5.637e-09        GradientNorm       0.6526825943738854
+Speedmapping, acx            100001    13653.04μs false 1.952e-01      Fevals > limit       19.328761238836886
 
 GAUSS2LS: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   323630  4849739.60μs  true 3.269e-08        GradientNorm 1247.5282
-Optim, LBFGS                  183     1637.45μs  true 9.300e-10        GradientNorm 1247.5282
-Speedmapping, acx         1000001  3821178.91μs false 1.389e-04            max_eval 1247.5282
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000  1617916.99μs false 4.631e+01       GradientCalls       1264.6648393658168
+Optim, LBFGS                    183     1582.29μs  true 9.300e-10        GradientNorm       1247.5282092309992
+Speedmapping, acx            100001   474396.94μs false 5.816e-04      Fevals > limit        1247.528209249839
 
 PALMER6C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   619851   385923.60μs  true 8.207e-08        GradientNorm 0.0163874
-Optim, LBFGS                   44       14.79μs  true 3.432e-08        GradientNorm 0.0163874
-Speedmapping, acx         1000001   141055.11μs false 9.399e-04            max_eval 0.0950475
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000    86375.56μs false 5.729e-02       GradientCalls       0.4470212755416697
+Optim, LBFGS                     44       18.39μs  true 3.432e-08        GradientNorm     0.016387421618639826
+Speedmapping, acx            100000    12719.41μs false 1.071e-01            max_eval      0.16854738934010122
 
 PALMER2C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   670896   314269.27μs  true 4.829e-08        GradientNorm 0.0144213
-Optim, LBFGS                   57       19.75μs  true 1.920e-09        GradientNorm 0.0144213
-Speedmapping, acx         1000002   156586.17μs false 2.258e-02            max_eval 0.3045348
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000    70198.55μs false 2.001e-02       GradientCalls     0.015767187667362924
+Optim, LBFGS                     57       20.61μs  true 1.920e-09        GradientNorm      0.01442139119280385
+Speedmapping, acx            100001    12785.91μs false 7.813e-02      Fevals > limit       2.2224909387748033
 
 PALMER1C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   630836   311231.71μs  true 9.854e-08        GradientNorm 0.0975979
-Optim, LBFGS                   54       19.57μs  true 3.697e-08        GradientNorm 0.0975979
-Speedmapping, acx         1000001   155941.01μs false 1.962e+00            max_eval 41.014589
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000    81547.39μs false 2.531e+01       GradientCalls       0.6791417372916205
+Optim, LBFGS                     54       19.43μs  true 3.697e-08        GradientNorm      0.09759799126342045
+Speedmapping, acx            100001    12422.08μs false 1.504e+00      Fevals > limit       119.24106442807648
 
 PALMER4C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   621338   418817.03μs  true 8.237e-08        GradientNorm 0.0503106
-Optim, LBFGS                   42       15.61μs  true 4.718e-09        GradientNorm 0.0503106
-Speedmapping, acx         1000001   162341.12μs false 5.787e-03            max_eval 0.3678101
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000    95283.33μs false 6.384e+00       GradientCalls        1.504720948476262
+Optim, LBFGS                     42       14.58μs  true 4.718e-09        GradientNorm      0.05031069582074478
+Speedmapping, acx            100002    20270.11μs false 3.083e-02      Fevals > limit       0.7860174678873362
 
 PALMER3C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   451326   214295.09μs  true 7.546e-08        GradientNorm 0.0195376
-Optim, LBFGS                   43       14.77μs  true 6.783e-09        GradientNorm 0.0195376
-Speedmapping, acx         1000000   129651.26μs false 4.393e-03            max_eval 0.1571557
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000    81088.72μs false 4.852e-02       GradientCalls      0.01988341056398906
+Optim, LBFGS                     43       15.86μs  true 6.783e-09        GradientNorm     0.019537638513101023
+Speedmapping, acx            100000    12706.72μs false 2.723e-02            max_eval      0.47497349397802585
 
 VIBRBEAM: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   288922   232213.84μs  true 9.058e-08        GradientNorm 0.3322376
-Optim, LBFGS                  267      208.66μs  true 1.945e-08        GradientNorm 1.7488666
-Speedmapping, acx         1000000   461001.38μs false 8.612e+01            max_eval 24.255340
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100005    99724.05μs false 2.757e+00      Fevals > limit       0.3322380326249857
+Optim, LBFGS                    267      215.08μs  true 1.945e-08        GradientNorm       1.7488666547254572
+Speedmapping, acx            100000    64879.87μs false 1.171e+02            max_eval       36.843256394319674
 
 PALMER8C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   182515    79322.30μs  true 8.400e-08        GradientNorm 0.1597680
-Optim, LBFGS                   41       13.83μs  true 4.816e-09        GradientNorm 0.1597680
-Speedmapping, acx         1000001   124192.00μs false 1.465e-03            max_eval 0.5637297
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100001    78891.04μs false 3.789e-05      Fevals > limit       0.1597700520336323
+Optim, LBFGS                     41       14.54μs  true 4.816e-09        GradientNorm      0.15976806347027606
+Speedmapping, acx            100000    10687.69μs false 5.741e-03            max_eval       0.6387173932394259
 
 GAUSS3LS: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient  1000000 13746333.24μs false 1.371e+01       GradientCalls 1245.3669
-Optim, LBFGS                  213     1847.95μs  true 3.504e-10        GradientNorm 1244.4846
-Speedmapping, acx            1030     3681.60μs  true 5.350e-08         first_order 11386.720
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000  1577167.24μs false 2.331e+02       GradientCalls         1314.81109352708
+Optim, LBFGS                    213     1866.39μs  true 3.504e-10        GradientNorm        1244.484636013157
+Speedmapping, acx             23200    93060.69μs  true 9.446e-08         first_order       11386.720893857404
 
 PALMER7C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   686931   298317.26μs  true 9.012e-08        GradientNorm 0.6019856
-Optim, LBFGS                   47       15.55μs  true 1.415e-08        GradientNorm 0.6019856
-Speedmapping, acx         1000001   133152.96μs false 7.660e-03            max_eval 4.3413932
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000    70122.02μs false 1.183e+00       GradientCalls       0.6237200196100231
+Optim, LBFGS                     47       15.67μs  true 1.415e-08        GradientNorm       0.6019856723140617
+Speedmapping, acx            100001    11139.87μs false 1.651e-02      Fevals > limit        4.736179326907035
 
 GAUSS1LS: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   739873 10591846.88μs  true 9.773e-08        GradientNorm 1315.8222
-Optim, LBFGS                  181     1593.75μs  true 8.162e-08        GradientNorm 1315.8222
-Speedmapping, acx             516     2006.52μs  true 3.460e-08         first_order 52889.248
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000  1413765.82μs false 2.140e+02       GradientCalls       1346.9302128859188
+Optim, LBFGS                    181     1560.17μs  true 8.162e-08        GradientNorm       1315.8222432033774
+Speedmapping, acx               232      863.31μs  true 3.870e-09         first_order        52889.24861822945
 
 STRTCHDV: 10 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       46       71.89μs  true 6.924e-08        GradientNorm 1.2341096
-Optim, LBFGS                   66       66.53μs  true 6.287e-08        GradientNorm 1.4651569
-Speedmapping, acx              82       36.91μs  true 5.704e-08         first_order 1.1722089
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         46       72.17μs  true 6.924e-08        GradientNorm    1.234109671927607e-10
+Optim, LBFGS                     66       68.88μs  true 6.287e-08        GradientNorm   1.4651569572307154e-11
+Speedmapping, acx                82       37.59μs  true 5.704e-08         first_order   1.1722200474526637e-10
 
 HILBERTB: 10 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        6        4.16μs  true 2.272e-09        GradientNorm 9.9477300
-Optim, LBFGS                   12        6.13μs  true 2.272e-09        GradientNorm 9.9477300
-Speedmapping, acx               8        1.44μs  true 6.584e-08         first_order 9.2422786
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          6        4.21μs  true 2.272e-09        GradientNorm    9.947730090945665e-19
+Optim, LBFGS                     12        6.47μs  true 2.272e-09        GradientNorm    9.947730090981393e-19
+Speedmapping, acx                 8        1.45μs  true 6.584e-08         first_order    9.242278604553933e-16
 
 TRIGON1: 10 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       63       53.51μs  true 8.440e-08        GradientNorm 1.8713990
-Optim, LBFGS                   60       33.11μs  true 3.999e-09        GradientNorm 5.4585568
-Speedmapping, acx             120       22.24μs  true 7.368e-08         first_order 4.6836831
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         63       64.15μs  true 8.440e-08        GradientNorm   1.8713990914681344e-16
+Optim, LBFGS                     60       35.68μs  true 3.999e-09        GradientNorm    5.458556857344474e-19
+Speedmapping, acx               120       22.70μs  true 7.374e-08         first_order    4.684158834218382e-17
 
 TOINTQOR: 50 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       49       38.47μs  true 7.421e-08        GradientNorm 1175.4722
-Optim, LBFGS                   89       49.78μs  true 5.393e-08        GradientNorm 1175.4722
-Speedmapping, acx              64       13.17μs  true 1.028e-08         first_order 1175.4722
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         59       46.07μs  true 7.451e-08        GradientNorm        1175.472222146169
+Optim, LBFGS                     89       49.76μs  true 5.393e-08        GradientNorm       1175.4722221461693
+Speedmapping, acx                63       10.09μs  true 1.127e-08         first_order       1175.4722221461693
 
 CHNROSNB: 50 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      324      315.18μs  true 9.395e-08        GradientNorm 6.1605286
-Optim, LBFGS                  663      347.27μs  true 7.195e-08        GradientNorm 1.7987068
-Speedmapping, acx            1044      145.24μs  true 6.242e-08         first_order 6.5256877
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        324      300.60μs  true 9.395e-08        GradientNorm    6.160528641801317e-16
+Optim, LBFGS                    663      352.98μs  true 7.195e-08        GradientNorm   1.7987068991354112e-16
+Speedmapping, acx              1151      155.88μs  true 9.807e-08         first_order     8.81098045138212e-16
 
 DECONVU: 63 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     1560     2585.96μs  true 8.512e-08        GradientNorm 2.7875493
-Optim, LBFGS                  984     1020.95μs  true 9.771e-08        GradientNorm 1.9037212
-Speedmapping, acx           23974    12709.41μs  true 9.962e-08         first_order 1.5203465
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       1560     2540.91μs  true 8.512e-08        GradientNorm    2.787549304857856e-10
+Optim, LBFGS                    984     1025.22μs  true 9.771e-08        GradientNorm   1.9037212602361224e-10
+Speedmapping, acx             14390     7417.76μs  true 9.832e-08         first_order    1.4399268304258726e-9
 
 LUKSAN13LS: 98 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      219      231.94μs  true 5.765e-08        GradientNorm 25188.859
-Optim, LBFGS                  197      169.85μs  true 5.222e-08        GradientNorm 25188.859
-Speedmapping, acx             220       82.63μs  true 8.079e-08         first_order 25188.859
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        219      231.84μs  true 5.765e-08        GradientNorm       25188.859589645173
+Optim, LBFGS                    197      172.45μs  true 5.222e-08        GradientNorm        25188.85958964516
+Speedmapping, acx               239       76.14μs  true 7.091e-08         first_order        25188.85958964517
 
 QING: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       87      117.01μs  true 9.265e-08        GradientNorm 2.1046666
-Optim, LBFGS                  217      155.31μs  true 7.209e-08        GradientNorm 3.9116148
-Speedmapping, acx             130       39.21μs  true 7.740e-08         first_order 6.7655489
-
-Paraboloid Random Matrix: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      169      504.74μs  true 8.061e-08        GradientNorm 4.0449583
-Optim, LBFGS                  283      533.87μs  true 9.265e-08        GradientNorm 8.8208202
-Speedmapping, acx             210      184.46μs  true 8.770e-08         first_order 2.4644966
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         87      118.62μs  true 9.265e-08        GradientNorm    2.104666668791853e-16
+Optim, LBFGS                    217      154.06μs  true 7.209e-08        GradientNorm    3.911614815313697e-16
+Speedmapping, acx               131       32.29μs  true 7.739e-08         first_order    6.764967580974411e-17
 
 Extended Powell: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     8994    12618.16μs  true 9.726e-08        GradientNorm 5.2950521
-Optim, LBFGS                 1449     1003.01μs  true 8.808e-08        GradientNorm 1.0691771
-Speedmapping, acx             440      110.69μs  true 8.220e-08         first_order 6.6776778
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       8994    12226.78μs  true 9.726e-08        GradientNorm    5.295052135637918e-12
+Optim, LBFGS                   1449     1040.94μs  true 8.808e-08        GradientNorm   1.0691771728067718e-10
+Speedmapping, acx               359       79.17μs  true 5.903e-08         first_order     5.45794455581233e-10
 
 Trigonometric: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       65      243.82μs  true 5.714e-08        GradientNorm 9.2048134
-Optim, LBFGS                  123      315.30μs  true 9.552e-08        GradientNorm 9.2048149
-Speedmapping, acx             114      167.22μs  true 4.389e-08         first_order 1.2026987
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         65      237.79μs  true 5.714e-08        GradientNorm     9.204813466115113e-7
+Optim, LBFGS                    123      305.84μs  true 9.552e-08        GradientNorm     9.204814954278251e-7
+Speedmapping, acx               119      162.15μs  true 1.969e-08         first_order     1.202698700231473e-6
 
 Dixon and Price: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      168      250.41μs  true 9.149e-08        GradientNorm 2.3701758
-Optim, LBFGS                 2120     1664.63μs  true 6.772e-08        GradientNorm 0.6666666
-Speedmapping, acx             298      104.43μs  true 5.400e-08         first_order 5.3437504
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        168      252.40μs  true 9.149e-08        GradientNorm    2.370175850959668e-16
+Optim, LBFGS                   2120     1628.83μs  true 6.772e-08        GradientNorm       0.6666666666666675
+Speedmapping, acx               311       87.03μs  true 9.065e-08         first_order   4.1028176218331614e-16
 
 Paraboloid Diagonal: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     2175     3220.97μs  true 8.499e-08        GradientNorm 2.6472479
-Optim, LBFGS                  260      251.52μs  true 9.046e-08        GradientNorm 6.0502738
-Speedmapping, acx             223       93.35μs  true 6.989e-08         first_order 6.6221452
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       2175     2388.22μs  true 8.499e-08        GradientNorm    2.647247956045749e-15
+Optim, LBFGS                    260      186.67μs  true 9.046e-08        GradientNorm    6.050273864023003e-15
+Speedmapping, acx               231       56.22μs  true 6.028e-08         first_order    4.231972505465712e-16
 
 LUKSAN17LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     1208     8235.77μs  true 9.759e-08        GradientNorm 0.4931612
-Optim, LBFGS                  699     3692.83μs  true 7.647e-08        GradientNorm 0.4931612
-Speedmapping, acx             690     1950.62μs  true 5.417e-08         first_order 0.4931612
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       1208     8408.33μs  true 9.759e-08        GradientNorm       0.4931612903225897
+Optim, LBFGS                    699     3803.41μs  true 7.647e-08        GradientNorm       0.4931612903225881
+Speedmapping, acx               724     2087.82μs  true 7.909e-08         first_order        0.493161290322595
 
 LUKSAN11LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      998     1491.47μs  true 9.980e-08        GradientNorm 1.8049443
-Optim, LBFGS                 2481     2172.76μs  true 1.700e-08        GradientNorm 2.3034776
-Speedmapping, acx            8359     2312.11μs  true 5.195e-12         first_order 6.7463141
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        998     1604.69μs  true 9.980e-08        GradientNorm   1.8049443361108847e-15
+Optim, LBFGS                   2481     2686.13μs  true 1.700e-08        GradientNorm    2.303477682844003e-18
+Speedmapping, acx              7876     2673.03μs  true 1.711e-08         first_order   1.5295449296827437e-18
 
 Quadratic Diagonal: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       60      108.20μs  true 5.247e-08        GradientNorm 9.4898519
-Optim, LBFGS                  174      166.28μs  true 5.247e-08        GradientNorm 9.4898516
-Speedmapping, acx             124       51.50μs  true 4.535e-08         first_order 5.5008126
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         60       91.79μs  true 5.247e-08        GradientNorm    9.489851919121134e-16
+Optim, LBFGS                    174      132.25μs  true 5.247e-08        GradientNorm    9.489851667227087e-16
+Speedmapping, acx               124       27.63μs  true 4.532e-08         first_order    5.493119114651368e-16
 
 LUKSAN21LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     1899     3140.30μs  true 7.975e-08        GradientNorm 6.0188021
-Optim, LBFGS                 1852     1653.18μs  true 8.233e-08        GradientNorm 6.0477643
-Speedmapping, acx            1951      787.76μs  true 7.917e-08         first_order 2.8664114
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       1899     3208.89μs  true 7.975e-08        GradientNorm    6.018802172199134e-13
+Optim, LBFGS                   1852     1631.00μs  true 8.233e-08        GradientNorm    6.047764343298193e-14
+Speedmapping, acx              1788      729.67μs  true 6.120e-08         first_order    8.578302241030856e-14
 
 LUKSAN16LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       65      518.03μs  true 7.514e-08        GradientNorm 3.5696970
-Optim, LBFGS                  115      789.11μs  true 3.258e-08        GradientNorm 3.5696970
-Speedmapping, acx              39      188.76μs  true 5.351e-08         first_order 3.5696970
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         65      507.17μs  true 7.514e-08        GradientNorm        3.569697051173904
+Optim, LBFGS                    115      762.35μs  true 3.258e-08        GradientNorm       3.5696970511739012
+Speedmapping, acx                39      181.33μs  true 5.350e-08         first_order        3.569697051173897
 
 LUKSAN15LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       65     1692.04μs  true 6.445e-08        GradientNorm 3.5696970
-Optim, LBFGS                  107     2400.03μs  true 1.981e-08        GradientNorm 3.5696970
-Speedmapping, acx              40      646.37μs  true 3.129e-08         first_order 3.5696970
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         65     1677.33μs  true 6.445e-08        GradientNorm        3.569697051173904
+Optim, LBFGS                    107     2395.29μs  true 1.981e-08        GradientNorm        3.569697051173902
+Speedmapping, acx                40      639.37μs  true 3.129e-08         first_order          3.5696970511739
 
 VARDIM: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       75       98.87μs  true 5.093e-08        GradientNorm 1.6212745
-Optim, LBFGS                   87       68.17μs  true 8.882e-16        GradientNorm 4.8810768
-Speedmapping, acx             108       69.76μs  true 3.800e-08         first_order 1.9924766
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         75       99.02μs  true 5.093e-08        GradientNorm    1.621274591698643e-20
+Optim, LBFGS                     87       80.77μs  true 8.882e-16        GradientNorm   4.8810768510550105e-30
+Speedmapping, acx               100       59.81μs  true 1.308e-08         first_order    2.488047565828395e-21
 
 BROWNAL: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       90      100.86μs  true 4.178e-09        GradientNorm 5.9431422
-Optim, LBFGS                   51       37.94μs  true 3.331e-11        GradientNorm 1.4022938
-Speedmapping, acx         1000001   473716.02μs false 1.060e-06            max_eval 1.1919990
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         90       99.51μs  true 4.178e-09        GradientNorm    5.943142237882882e-16
+Optim, LBFGS                     51       45.13μs  true 3.331e-11        GradientNorm   1.4022938869590369e-24
+Speedmapping, acx            100001    39390.09μs false 1.136e-06      Fevals > limit    1.3670923614369151e-9
 
 ARGLINB: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        4100004203.80μs false 4.068e-02           Timed out 99.625468
-Optim, LBFGS                   45       85.32μs false 4.280e-04    FailedLinesearch 99.625468
-Speedmapping, acx         1000001   719660.04μs false 4.925e-04            max_eval 99.625468
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          4100003837.82μs false 4.068e-02           Timed out        99.62546816479403
+Optim, LBFGS                     45       98.87μs false 4.280e-04    FailedLinesearch        99.62546816479401
+Speedmapping, acx            100001    64981.94μs false 4.736e-04      Fevals > limit          99.625468164794
 
 ARGLINA: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        2        9.54μs  true 5.773e-15        GradientNorm     200.0
-Optim, LBFGS                    3        8.43μs  true 0.000e+00        GradientNorm     200.0
-Speedmapping, acx               4        4.42μs  true 0.000e+00         first_order     200.0
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          2        9.51μs  true 5.773e-15        GradientNorm                    200.0
+Optim, LBFGS                      3       15.76μs  true 0.000e+00        GradientNorm                    200.0
+Speedmapping, acx                 4        4.24μs  true 0.000e+00         first_order                    200.0
 
 PENALTY2: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     1201     3573.31μs  true 9.835e-08        GradientNorm 4.7116277
-Optim, LBFGS                  539     1417.94μs  true 7.478e-08        GradientNorm 4.7116277
-Speedmapping, acx             324      374.62μs  true 7.119e-08         first_order 4.7116277
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       1201     3366.64μs  true 9.835e-08        GradientNorm     4.711627727546475e13
+Optim, LBFGS                    539     1386.66μs  true 7.478e-08        GradientNorm     4.711627727546475e13
+Speedmapping, acx               343      408.17μs  true 2.339e-08         first_order     4.711627727546475e13
 
 ARGTRIGLS: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      643     4089.33μs  true 5.980e-08        GradientNorm 1.7206304
-Optim, LBFGS                 1925     7490.64μs  true 7.167e-08        GradientNorm 6.5351650
-Speedmapping, acx            2620     4698.98μs  true 9.452e-08         first_order 2.4284270
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        643     4235.14μs  true 5.980e-08        GradientNorm   1.7206304759555208e-16
+Optim, LBFGS                   1925     7856.44μs  true 7.167e-08        GradientNorm    6.535165081315374e-17
+Speedmapping, acx              1914     3393.92μs  true 7.871e-08         first_order    8.358151997065141e-17
 
 ARGLINC: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     1693100004590.99μs false 2.403e-04           Timed out 101.12547
-Optim, LBFGS              1000014  1352562.19μs false 2.403e-04       GradientCalls 101.12547
-Speedmapping, acx         1000001   831238.99μs false 4.663e-04            max_eval 101.12547
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       1693100005306.96μs false 2.403e-04           Timed out       101.12547051442911
+Optim, LBFGS                 100024   124197.96μs false 2.403e-04      Fevals > limit       101.12547051442911
+Speedmapping, acx            100001    69016.93μs false 3.959e-04      Fevals > limit       101.12547051442908
 
 PENALTY3: 200 parameters, abstol = 1.0e-7.
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        109      258.78μs  true 6.656e-08        GradientNorm    4.627051627677082e-19
+Optim, LBFGS                    206      316.29μs  true 5.245e-08        GradientNorm   4.1104417865830587e-19
+Speedmapping, acx               179      136.25μs  true 8.147e-09         first_order     1.697129067354959e-9
 
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      109      248.48μs  true 6.656e-08        GradientNorm 4.6270516
-Optim, LBFGS                  206      311.53μs  true 5.245e-08        GradientNorm 4.1104417
-Speedmapping, acx             185      132.40μs  true 5.519e-08         first_order 8.5484659
-
-Large Polynomial: 250 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        2       11.92μs  true 0.000e+00        GradientNorm       0.0
-Optim, LBFGS                    3       10.51μs  true 0.000e+00        GradientNorm       0.0
-Speedmapping, acx               4        5.82μs  true 0.000e+00         first_order       0.0
+Large-Scale Quadratic: 250 parameters, abstol = 1.0e-7.
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          2       12.87μs  true 0.000e+00        GradientNorm                      0.0
+Optim, LBFGS                      3       21.56μs  true 0.000e+00        GradientNorm                      0.0
+Speedmapping, acx                 4        5.85μs  true 0.000e+00         first_order                      0.0
 
 OSCIPATH: 500 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       19       63.66μs  true 6.187e-08        GradientNorm 0.9999666
-Optim, LBFGS                   38       80.02μs  true 5.961e-08        GradientNorm 0.9999666
-Speedmapping, acx              15       24.22μs  true 1.571e-08         first_order 0.9999666
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         19       63.41μs  true 6.187e-08        GradientNorm       0.9999666655201666
+Optim, LBFGS                     38       80.14μs  true 5.961e-08        GradientNorm       0.9999666655201664
+Speedmapping, acx                15       16.51μs  true 1.571e-08         first_order       0.9999666655201663
 
 GENROSE: 500 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     1126     4992.37μs  true 5.980e-08        GradientNorm 2.3527656
-Optim, LBFGS                 2669     6395.43μs  true 6.474e-08        GradientNorm 4.4042959
-Speedmapping, acx            3783     3734.83μs  true 1.195e-08         first_order 5.8365292
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       1126     5076.67μs  true 5.980e-08        GradientNorm   2.3527656788743175e-17
+Optim, LBFGS                   2669     6539.87μs  true 6.474e-08        GradientNorm    4.404295964413134e-17
+Speedmapping, acx              3679     3461.64μs  true 4.944e-08         first_order   5.4654824087189934e-17
 
 INTEQNELS: 502 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        8       66.76μs  true 8.746e-09        GradientNorm 1.6540332
-Optim, LBFGS                   14       73.22μs  true 7.600e-08        GradientNorm 1.0975417
-Speedmapping, acx              10       33.09μs  true 5.466e-08         first_order 6.0028024
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          8       66.09μs  true 8.746e-09        GradientNorm   1.6540332786000442e-15
+Optim, LBFGS                     14       75.86μs  true 7.600e-08        GradientNorm   1.0975417944411849e-13
+Speedmapping, acx                10       33.27μs  true 5.466e-08         first_order    6.002802406342395e-14
 
 EXTROSNB: 1000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient    38267   333482.98μs  true 9.839e-08        GradientNorm 3.1704182
-Optim, LBFGS               108272   507188.87μs  true 9.514e-08        GradientNorm 4.4595139
-Speedmapping, acx         1000000  2130380.74μs false 3.660e-07            max_eval 1.8103875
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient      38267   333693.55μs  true 9.839e-08        GradientNorm     3.170418262028877e-8
+Optim, LBFGS                 100000   450883.79μs false 3.155e-07       GradientCalls     5.66405611202721e-12
+Speedmapping, acx            100002   240025.04μs false 7.321e-07      Fevals > limit    3.6843695052118047e-7
 
 PENALTY1: 1000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       76      419.77μs  true 9.627e-08        GradientNorm 0.0096861
-Optim, LBFGS                  189      712.24μs  true 7.396e-08        GradientNorm 0.0096861
-Speedmapping, acx              98      204.41μs  true 9.531e-08         first_order 0.0096861
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         76      425.36μs  true 9.627e-08        GradientNorm     0.009686176339125207
+Optim, LBFGS                    189      717.58μs  true 7.396e-08        GradientNorm     0.009686175434613111
+Speedmapping, acx                98      206.65μs  true 2.307e-08         first_order     0.009686175495025356
 
 EG2: 1000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       12      160.32μs  true 1.011e-13        GradientNorm -998.9473
-Optim, LBFGS                   15      183.85μs  true 1.054e-11        GradientNorm -998.9473
-Speedmapping, acx              10       81.57μs  true 3.422e-13         first_order -998.9473
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         12      162.43μs  true 1.011e-13        GradientNorm       -998.9473933009451
+Optim, LBFGS                     15      183.50μs  true 1.054e-11        GradientNorm       -998.9473933009451
+Speedmapping, acx                10       82.59μs  true 3.422e-13         first_order       -998.9473933009451
 
 FLETCHCR: 1000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     4440    36073.42μs  true 9.848e-08        GradientNorm 6.0402170
-Optim, LBFGS                11352    51857.31μs  true 8.919e-08        GradientNorm 2.6979499
-Speedmapping, acx           46028    85721.43μs  true 5.683e-08         first_order 9.4846985
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       4440    36571.95μs  true 9.848e-08        GradientNorm    6.040217013039128e-15
+Optim, LBFGS                  11352    51305.38μs  true 8.919e-08        GradientNorm    2.697949909329217e-16
+Speedmapping, acx             45700    78560.64μs  true 4.030e-08         first_order   2.1340529440319674e-15
 
 MSQRTBLS: 1024 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     3006    66143.65μs  true 9.911e-08        GradientNorm 1.9787257
-Optim, LBFGS                 8015   103980.62μs  true 9.512e-08        GradientNorm 1.4509481
-Speedmapping, acx            8564    77155.32μs  true 9.527e-08         first_order 3.1477372
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       3006    63555.17μs  true 9.911e-08        GradientNorm   1.9787257587323126e-12
+Optim, LBFGS                   8015   109935.92μs  true 9.512e-08        GradientNorm     1.45094815360375e-12
+Speedmapping, acx              5885    53661.91μs  true 5.444e-08         first_order    6.027391052204702e-11
 
 MSQRTALS: 1024 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     3911    80304.13μs  true 9.181e-08        GradientNorm 2.4127664
-Optim, LBFGS                10895   151764.46μs  true 9.105e-08        GradientNorm 2.1991833
-Speedmapping, acx           12332   107393.06μs  true 9.864e-08         first_order 1.0731975
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       3911    83800.35μs  true 9.181e-08        GradientNorm     2.41276642878585e-12
+Optim, LBFGS                  10895   153935.79μs  true 9.105e-08        GradientNorm   2.1991833537974746e-12
+Speedmapping, acx             13554   123679.03μs  true 9.949e-08         first_order    1.1252088716011202e-9
 
 EDENSCH: 2000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       51      582.97μs  true 9.625e-08        GradientNorm 12003.284
-Optim, LBFGS                   71      588.42μs  true 3.654e-08        GradientNorm 12003.284
-Speedmapping, acx              52      191.59μs  true 3.410e-08         first_order 12003.284
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         51      580.72μs  true 9.625e-08        GradientNorm       12003.284592020766
+Optim, LBFGS                     71      584.53μs  true 3.654e-08        GradientNorm       12003.284592020764
+Speedmapping, acx                52      201.14μs  true 3.410e-08         first_order       12003.284592020764
 
 DIXMAANK: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     2780   236620.69μs  true 9.551e-08        GradientNorm 1.0000000
-Optim, LBFGS                 8559   430593.33μs  true 8.498e-08        GradientNorm 1.0000000
-Speedmapping, acx           24249   597319.52μs  true 9.478e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       2780   233545.43μs  true 9.551e-08        GradientNorm       1.0000000002725384
+Optim, LBFGS                   8559   423780.41μs  true 8.498e-08        GradientNorm        1.000000000215962
+Speedmapping, acx             11567   272348.77μs  true 9.585e-08         first_order       1.0000000206813466
 
 DIXMAANH: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      189    13126.42μs  true 9.546e-08        GradientNorm 1.0000000
-Optim, LBFGS                  711    29554.33μs  true 9.977e-08        GradientNorm 1.0000000
-Speedmapping, acx             378     7019.53μs  true 6.717e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        189    13169.68μs  true 9.546e-08        GradientNorm       1.0000000000054472
+Optim, LBFGS                    711    28675.78μs  true 9.977e-08        GradientNorm       1.0000000000088836
+Speedmapping, acx               404     7232.70μs  true 8.937e-08         first_order       1.0000000000010638
 
 DIXMAANI1: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     4798   395239.72μs  true 7.295e-08        GradientNorm 1.0000000
-Optim, LBFGS                14227   706805.78μs  true 8.477e-08        GradientNorm 1.0000000
-Speedmapping, acx           17029   389221.48μs  true 9.871e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       4798   395937.61μs  true 7.295e-08        GradientNorm       1.0000000006594718
+Optim, LBFGS                  14227   754112.76μs  true 8.477e-08        GradientNorm       1.0000000000089686
+Speedmapping, acx             17393   409630.17μs  true 9.756e-08         first_order         1.00000002150479
 
 DIXMAANB: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       11      465.80μs  true 1.562e-08        GradientNorm 1.0000000
-Optim, LBFGS                   22      541.73μs  true 7.265e-08        GradientNorm 1.0000000
-Speedmapping, acx              18      230.51μs  true 7.246e-09         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         11      465.19μs  true 1.562e-08        GradientNorm       1.0000000000000056
+Optim, LBFGS                     22      545.53μs  true 7.265e-08        GradientNorm       1.0000000000000036
+Speedmapping, acx                18      232.41μs  true 7.246e-09         first_order       1.0000000000000027
 
 DIXMAAND: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       14      578.58μs  true 6.504e-08        GradientNorm 1.0000000
-Optim, LBFGS                   28      692.14μs  true 3.194e-08        GradientNorm 1.0000000
-Speedmapping, acx              20      250.17μs  true 3.528e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         14      572.61μs  true 6.504e-08        GradientNorm       1.0000000000000029
+Optim, LBFGS                     28      691.34μs  true 3.194e-08        GradientNorm       1.0000000000000018
+Speedmapping, acx                20      250.32μs  true 3.528e-08         first_order       1.0000000000000253
 
 DIXMAANN: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     3601   393245.89μs  true 9.877e-08        GradientNorm 1.0000000
-Optim, LBFGS                11012   744051.29μs  true 9.153e-08        GradientNorm 1.0000000
-Speedmapping, acx           15656   503478.95μs  true 9.983e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       3601   399996.14μs  true 9.877e-08        GradientNorm        1.000000000506924
+Optim, LBFGS                  11012   730986.72μs  true 9.153e-08        GradientNorm        1.000000000098451
+Speedmapping, acx             16249   520220.67μs  true 9.922e-08         first_order       1.0000000221488081
 
 DIXMAANJ: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     2846   237985.79μs  true 8.435e-08        GradientNorm 1.0000000
-Optim, LBFGS                 8592   433187.53μs  true 9.891e-08        GradientNorm 1.0000000
-Speedmapping, acx           19455   459366.66μs  true 9.929e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       2846   235943.80μs  true 8.435e-08        GradientNorm        1.000000000210818
+Optim, LBFGS                   8592   431467.14μs  true 9.891e-08        GradientNorm       1.0000000001107434
+Speedmapping, acx             17283   408070.15μs  true 9.643e-08         first_order       1.0000000209214888
 
 DIXMAANM1: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     4748   527576.05μs  true 9.599e-08        GradientNorm 1.0000000
-Optim, LBFGS                14275  1009480.68μs  true 9.228e-08        GradientNorm 1.0000000
-Speedmapping, acx           32109  1073464.98μs  true 8.408e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       4748   523029.22μs  true 9.599e-08        GradientNorm       1.0000000000412754
+Optim, LBFGS                  14275   954724.53μs  true 9.228e-08        GradientNorm       1.0000000000033318
+Speedmapping, acx             13365   426740.22μs  true 9.990e-08         first_order       1.0000000210168385
 
 DIXMAANF: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      199    13630.49μs  true 9.821e-08        GradientNorm 1.0000000
-Optim, LBFGS                  702    28326.84μs  true 9.955e-08        GradientNorm 1.0000000
-Speedmapping, acx             580    10611.77μs  true 6.192e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        199    13885.10μs  true 9.821e-08        GradientNorm        1.000000000010803
+Optim, LBFGS                    702    28271.12μs  true 9.955e-08        GradientNorm         1.00000000000579
+Speedmapping, acx               471     8482.97μs  true 9.100e-08         first_order       1.0000000000008114
 
 DIXMAANL: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     2755   235201.64μs  true 9.337e-08        GradientNorm 1.0000000
-Optim, LBFGS                 8447   435613.39μs  true 9.822e-08        GradientNorm 1.0000000
-Speedmapping, acx           22752   551191.16μs  true 9.803e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       2755   227986.99μs  true 9.337e-08        GradientNorm       1.0000000002232792
+Optim, LBFGS                   8447   415940.93μs  true 9.822e-08        GradientNorm        1.000000000230228
+Speedmapping, acx              9423   214594.83μs  true 8.919e-08         first_order       1.0000000178987185
 
 DIXMAANC: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       13      530.35μs  true 1.744e-08        GradientNorm 1.0000000
-Optim, LBFGS                   23      562.66μs  true 4.768e-08        GradientNorm 1.0000000
-Speedmapping, acx              20      250.47μs  true 2.212e-09         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         13      532.45μs  true 1.744e-08        GradientNorm       1.0000000000000036
+Optim, LBFGS                     23      564.46μs  true 4.768e-08        GradientNorm       1.0000000000000306
+Speedmapping, acx                20      250.33μs  true 2.212e-09         first_order       1.0000000000000002
 
 DIXMAANO: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     3533   387856.54μs  true 8.994e-08        GradientNorm 1.0000000
-Optim, LBFGS                10734   743575.04μs  true 9.892e-08        GradientNorm 1.0000000
-Speedmapping, acx           23679   779247.76μs  true 9.995e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       3533   391155.95μs  true 8.994e-08        GradientNorm       1.0000000004242626
+Optim, LBFGS                  10734   717473.81μs  true 9.892e-08        GradientNorm        1.000000000093563
+Speedmapping, acx             11952   403173.56μs  true 8.005e-08         first_order       1.0000000109697404
 
 DIXMAANP: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     3464   385954.64μs  true 8.065e-08        GradientNorm 1.0000000
-Optim, LBFGS                10446   702253.50μs  true 9.947e-08        GradientNorm 1.0000000
-Speedmapping, acx           22738   738473.88μs  true 1.000e-07         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       3464   387639.95μs  true 8.065e-08        GradientNorm       1.0000000004208596
+Optim, LBFGS                  10446   748916.06μs  true 9.947e-08        GradientNorm       1.0000000001095768
+Speedmapping, acx             15702   516449.13μs  true 8.325e-08         first_order       1.0000000148915698
 
 DIXMAANA1: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        8      329.89μs  true 5.255e-08        GradientNorm 1.0000000
-Optim, LBFGS                   20      486.57μs  true 1.038e-12        GradientNorm       1.0
-Speedmapping, acx              12      177.70μs  true 1.235e-09         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          8      334.23μs  true 5.255e-08        GradientNorm       1.0000000000012823
+Optim, LBFGS                     20      487.90μs  true 1.038e-12        GradientNorm                      1.0
+Speedmapping, acx                12      177.48μs  true 1.235e-09         first_order       1.0000000000000007
 
 DIXMAANE1: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      256    17718.42μs  true 9.810e-08        GradientNorm 1.0000000
-Optim, LBFGS                  767    30830.11μs  true 9.317e-08        GradientNorm 1.0000000
-Speedmapping, acx             436     7946.77μs  true 6.823e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        256    17695.97μs  true 9.810e-08        GradientNorm       1.0000000000043696
+Optim, LBFGS                    767    30791.80μs  true 9.317e-08        GradientNorm         1.00000000000546
+Speedmapping, acx               455     8053.29μs  true 2.301e-08         first_order       1.0000000000000604
 
 DIXMAANG: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      199    13766.43μs  true 9.897e-08        GradientNorm 1.0000000
-Optim, LBFGS                  699    28283.25μs  true 9.918e-08        GradientNorm 1.0000000
-Speedmapping, acx             452     8252.99μs  true 8.878e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        199    13679.55μs  true 9.897e-08        GradientNorm        1.000000000006234
+Optim, LBFGS                    699    28052.78μs  true 9.918e-08        GradientNorm        1.000000000006425
+Speedmapping, acx               488     8652.92μs  true 9.930e-08         first_order       1.0000000000050482
 
 WOODS: 4000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      174     5096.30μs  true 3.025e-09        GradientNorm 2.8402425
-Optim, LBFGS                   62     1154.10μs  true 1.733e-10        GradientNorm 1.4220758
-Speedmapping, acx             460     3160.49μs  true 2.072e-08         first_order 7.4502046
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        174     5052.35μs  true 3.025e-09        GradientNorm   2.8402425208649075e-16
+Optim, LBFGS                     62     1252.22μs  true 1.733e-10        GradientNorm   1.4220758290748901e-19
+Speedmapping, acx               500     3534.78μs  true 1.458e-08         first_order    1.868313346760708e-16
 
 LIARWHD: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       38     1154.69μs  true 4.232e-12        GradientNorm 5.4685323
-Optim, LBFGS                   45     1131.65μs  true 8.882e-15        GradientNorm 9.8982322
-Speedmapping, acx             127     1839.52μs  true 5.738e-08         first_order 1.0266710
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         38     1151.29μs  true 4.232e-12        GradientNorm    5.468532322709365e-25
+Optim, LBFGS                     45     1124.18μs  true 8.882e-15        GradientNorm    9.898232208260646e-28
+Speedmapping, acx               127     1846.53μs  true 5.724e-08         first_order   1.0216009627627096e-12
 
 BDQRTIC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      829    25352.75μs  true 5.804e-08        GradientNorm 20006.256
-Optim, LBFGS                  151     4824.49μs  true 6.315e-08        GradientNorm 20006.256
-Speedmapping, acx             242     4241.90μs  true 1.426e-08         first_order 20006.256
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        829    25788.41μs  true 5.804e-08        GradientNorm       20006.256878433673
+Optim, LBFGS                    151     4660.53μs  true 6.315e-08        GradientNorm       20006.256878433676
+Speedmapping, acx               250     4423.81μs  true 6.930e-08         first_order       20006.256878433673
 
 SCHMVETT: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      131    19762.07μs  true 8.752e-08        GradientNorm  -14994.0
-Optim, LBFGS                  146    17489.92μs  true 6.234e-08        GradientNorm  -14994.0
-Speedmapping, acx              82     5230.41μs  true 9.962e-08         first_order  -14994.0
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        131    19925.40μs  true 8.752e-08        GradientNorm                 -14994.0
+Optim, LBFGS                    146    17406.98μs  true 6.234e-08        GradientNorm                 -14994.0
+Speedmapping, acx                82     5152.75μs  true 9.962e-08         first_order                 -14994.0
 
 SROSENBR: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       18      526.47μs  true 5.869e-10        GradientNorm 9.0591124
-Optim, LBFGS                   26      489.55μs  true 3.119e-08        GradientNorm 1.5164287
-Speedmapping, acx              31      298.31μs  true 7.017e-12         first_order 1.9234108
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         18      530.11μs  true 5.869e-10        GradientNorm    9.059112427803899e-19
+Optim, LBFGS                     26      494.01μs  true 3.119e-08        GradientNorm    1.516428751618877e-15
+Speedmapping, acx                31      306.68μs  true 7.017e-12         first_order   1.9234108169266209e-19
 
 NCB20B: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     7941   710277.53μs  true 8.622e-08        GradientNorm 7351.3005
-Optim, LBFGS                 4617   375970.91μs  true 9.810e-08        GradientNorm 7351.3005
-Speedmapping, acx            5692   326804.39μs  true 9.838e-08         first_order 7351.3005
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       7941   746355.79μs  true 8.622e-08        GradientNorm        7351.300597853566
+Optim, LBFGS                   4617   395788.53μs  true 9.810e-08        GradientNorm        7351.300597853562
+Speedmapping, acx              6765   382950.18μs  true 9.437e-08         first_order        7351.300594032889
 
 QUARTC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       37     1571.39μs  true 9.662e-08        GradientNorm 3.4907174
-Optim, LBFGS                  176     4488.27μs  true 8.911e-08        GradientNorm 6.2597909
-Speedmapping, acx             108     1220.46μs  true 6.051e-08         first_order 1.7832465
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         37     1558.22μs  true 9.662e-08        GradientNorm    3.4907174167938507e-7
+Optim, LBFGS                    176     4391.74μs  true 8.911e-08        GradientNorm    6.259790949464199e-10
+Speedmapping, acx               108     1248.05μs  true 7.394e-08         first_order    2.3161980281156326e-7
 
 BROYDN3DLS: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       57     2436.21μs  true 9.721e-08        GradientNorm 1.5299856
-Optim, LBFGS                  104     2807.44μs  true 6.469e-08        GradientNorm 3.1444820
-Speedmapping, acx             178     2429.33μs  true 5.161e-08         first_order 1.8843361
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         57     2387.27μs  true 9.721e-08        GradientNorm       1.5299856363042652
+Optim, LBFGS                    104     2726.04μs  true 6.469e-08        GradientNorm   3.1444820485428944e-16
+Speedmapping, acx               183     2468.17μs  true 2.459e-08         first_order       1.8843361523758428
+Speedmapping, acx               183     2468.17μs  true 2.459e-08         first_order       1.8843361523758428
 
 POWELLSG: 5000 parameters, abstol = 1.0e-7.
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       4529   157812.13μs  true 9.959e-08        GradientNorm    1.1566908242938565e-9
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       4529   157812.13μs  true 9.959e-08        GradientNorm    1.1566908242938565e-9
+Optim, LBFGS                     88     1708.46μs  true 1.170e-08        GradientNorm   1.7328484548664498e-10
+Speedmapping, acx               290     2833.36μs  true 9.542e-08         first_order    1.3581133882322476e-7
 
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     4529   159330.35μs  true 9.959e-08        GradientNorm 1.1566908
-Optim, LBFGS                   88     1707.77μs  true 1.170e-08        GradientNorm 1.7328484
-Speedmapping, acx             330     3194.35μs  true 6.854e-08         first_order 1.0457420
 
 TRIDIA: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      825    40112.39μs  true 9.848e-08        GradientNorm 5.5027248
-Optim, LBFGS                 2467    64520.39μs  true 9.899e-08        GradientNorm 4.7422105
-Speedmapping, acx            3652    41424.25μs  true 7.871e-08         first_order 8.1892689
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        825    39522.60μs  true 9.848e-08        GradientNorm   5.5027248627020967e-17
+Optim, LBFGS                   2467    64673.52μs  true 9.899e-08        GradientNorm     4.74221059319102e-17
+Speedmapping, acx              4964    51940.24μs  true 7.188e-08         first_order   1.5415716420764567e-16
 
 GENHUMPS: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     6287  1224128.50μs  true 4.171e-10        GradientNorm 2.3602530
-Optim, LBFGS                26597  2927749.56μs  true 2.011e-08        GradientNorm 1.3252402
-Speedmapping, acx         1000001 62078738.93μs false 7.048e+00            max_eval 269099.67
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       6287  1204474.16μs  true 4.171e-10        GradientNorm    2.360253068924752e-18
+Optim, LBFGS                  26597  2867193.49μs  true 2.011e-08        GradientNorm   1.3252402556366641e-14
+Speedmapping, acx            100001  5867790.94μs false 3.436e+00      Fevals > limit         42465.3484667014
 
 INDEF: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       52     9369.90μs false 1.841e+00    FailedLinesearch 4603.2873
-Optim, LBFGS                   51     9203.47μs false 1.841e+00    FailedLinesearch 4603.2873
-Speedmapping, acx         1000001 49609344.01μs false 1.000e+00            max_eval -6.789831
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         52     9220.22μs false 1.841e+00    FailedLinesearch       4603.2873795320465
+Optim, LBFGS                     51     9145.59μs false 1.841e+00    FailedLinesearch       4603.2873795320465
+Speedmapping, acx            100001  4445693.02μs false 1.000e+00      Fevals > limit    -2.8766537949899514e6
 
 NONDQUAR: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     8769   290050.12μs  true 5.666e-08        GradientNorm 3.6988198
-Optim, LBFGS                33507   746346.24μs  true 9.169e-08        GradientNorm 4.1243133
-Speedmapping, acx            6878    75816.42μs  true 9.527e-08         first_order 1.9172965
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       8769   304771.81μs  true 5.666e-08        GradientNorm     3.698819809375723e-7
+Optim, LBFGS                  33507   739501.51μs  true 9.169e-08        GradientNorm      4.12431330236748e-8
+Speedmapping, acx              6284    67713.10μs  true 9.902e-08         first_order     1.983490993049976e-6
 
 TQUARTIC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       33      656.79μs  true 2.141e-08        GradientNorm 6.6389107
-Optim, LBFGS                   36      636.23μs  true 1.310e-14        GradientNorm 4.2906637
-Speedmapping, acx          126663  1057932.76μs  true 9.999e-08         first_order 6.2496054
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         33      670.73μs  true 2.141e-08        GradientNorm    6.638910721515401e-19
+Optim, LBFGS                     36      651.97μs  true 1.310e-14        GradientNorm   4.2906637673036595e-29
+Speedmapping, acx              6907    59118.49μs  true 9.998e-08         first_order     6.246858628052582e-8
 
 ARWHEAD: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       26      471.52μs  true 1.813e-10        GradientNorm       0.0
-Optim, LBFGS                   22      359.14μs  true 3.463e-09        GradientNorm       0.0
-Speedmapping, acx              20      189.04μs  true 1.152e-09         first_order       0.0
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         26      473.21μs  true 1.813e-10        GradientNorm                      0.0
+Optim, LBFGS                     22      374.36μs  true 3.463e-09        GradientNorm                      0.0
+Speedmapping, acx                20      194.07μs  true 1.152e-09         first_order                      0.0
 
 DQRTIC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       37     1581.52μs  true 9.662e-08        GradientNorm 3.4907174
-Optim, LBFGS                  176     4562.24μs  true 8.911e-08        GradientNorm 6.2597909
-Speedmapping, acx             108     1212.88μs  true 6.051e-08         first_order 1.7832465
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         37     1554.60μs  true 9.662e-08        GradientNorm    3.4907174167938507e-7
+Optim, LBFGS                    176     4317.09μs  true 8.911e-08        GradientNorm    6.259790949464199e-10
+Speedmapping, acx               108     1259.40μs  true 7.394e-08         first_order    2.3161980281156326e-7
 
 SINQUAD2: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     1248   116558.49μs  true 7.238e-09        GradientNorm 2.3585287
-Optim, LBFGS                  791    65009.72μs  true 8.550e-08        GradientNorm 2.1550919
-Speedmapping, acx         1000001 49995467.90μs false 1.961e-06            max_eval 2.3740000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       1248   110837.13μs  true 7.238e-09        GradientNorm    2.3585287568990307e-8
+Optim, LBFGS                    791    66677.79μs  true 8.550e-08        GradientNorm    2.155091992268146e-15
+Speedmapping, acx            100001  5030457.97μs false 2.461e-07      Fevals > limit     4.731395141815426e-5
 
 NONCVXU2: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient    18720  3011357.85μs  true 9.988e-08        GradientNorm 11585.316
-Optim, LBFGS                23228  2975023.74μs  true 9.913e-08        GradientNorm 11584.233
-Speedmapping, acx          209130 12914862.29μs  true 9.994e-08         first_order 11584.233
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient      18720  2981283.33μs  true 9.988e-08        GradientNorm       11585.316017278245
+Optim, LBFGS                  23228  3045301.24μs  true 9.913e-08        GradientNorm       11584.233364477728
+Speedmapping, acx            100001  6097685.10μs false 4.826e-07      Fevals > limit       11585.104203895089
 
 DQDRTIC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        7      246.25μs  true 2.122e-10        GradientNorm 3.7068202
-Optim, LBFGS                   16      288.29μs  true 1.271e-11        GradientNorm 8.4974040
-Speedmapping, acx              18      178.22μs  true 2.127e-10         first_order 2.0802578
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          7      250.15μs  true 2.122e-10        GradientNorm   3.7068202802538254e-22
+Optim, LBFGS                     16      309.79μs  true 1.271e-11        GradientNorm     8.49740404736296e-25
+Speedmapping, acx                18      188.27μs  true 2.127e-10         first_order   2.0802588095422822e-22
 
 FREUROTH: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      198     8388.10μs  true 7.417e-08        GradientNorm 608159.18
-Optim, LBFGS                   62     1723.14μs  true 5.731e-08        GradientNorm 608159.18
-Speedmapping, acx              95     1787.19μs  true 7.246e-08         first_order 608159.18
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        198     9072.89μs  true 7.417e-08        GradientNorm        608159.1890463276
+Optim, LBFGS                     62     1744.10μs  true 5.731e-08        GradientNorm        608159.1890463271
+Speedmapping, acx                95     1818.38μs  true 2.806e-08         first_order        608159.1890463276
 
 TOINTGSS: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        6      632.50μs  true 3.466e-09        GradientNorm 10.002000
-Optim, LBFGS                   12      858.40μs  true 2.138e-09        GradientNorm 10.002000
-Speedmapping, acx              63     2460.21μs  true 2.165e-09         first_order 10.002000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          6      631.69μs  true 3.466e-09        GradientNorm       10.002000800319914
+Optim, LBFGS                     12      855.69μs  true 2.138e-09        GradientNorm       10.002000800319914
+Speedmapping, acx                63     2473.67μs  true 2.165e-09         first_order       10.002000800319914
 
 MOREBV: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient        5      230.80μs  true 7.292e-08        GradientNorm 1.0390636
-Optim, LBFGS                    9      292.92μs  true 7.292e-08        GradientNorm 1.0390636
-Speedmapping, acx               5      101.42μs  true 6.124e-08         first_order 1.0392835
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient          5      236.77μs  true 7.292e-08        GradientNorm   1.0390636358892595e-11
+Optim, LBFGS                      9      306.92μs  true 7.292e-08        GradientNorm   1.0390636358892632e-11
+Speedmapping, acx                 5      103.74μs  true 6.124e-08         first_order   1.0392835862589593e-11
 
 CRAGGLVY: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      196    19744.63μs  true 9.567e-08        GradientNorm 1688.2153
-Optim, LBFGS                  305    23466.94μs  true 6.958e-08        GradientNorm 1688.2153
-Speedmapping, acx             188     7783.99μs  true 7.257e-08         first_order 1688.2153
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        196    19862.72μs  true 9.567e-08        GradientNorm        1688.215309714459
+Optim, LBFGS                    305    23327.43μs  true 6.958e-08        GradientNorm       1688.2153097144592
+Speedmapping, acx               197     7961.21μs  true 9.878e-08         first_order        1688.215309714459
 
 SPARSINE: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   214340 53076992.54μs  true 9.775e-08        GradientNorm 1.3908981
-Optim, LBFGS               560006100006145.00μs false 6.107e-06           Timed out 8.1706290
-Speedmapping, acx          811465100000181.20μs false 6.405e-03           Timed out 0.3606919
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000 27985659.26μs false 1.235e-03       GradientCalls     2.253121477617587e-7
+Optim, LBFGS                 100000 18796464.11μs false 1.181e-02       GradientCalls     0.001067678403754292
+Speedmapping, acx            100001 11810212.85μs false 2.110e-02      Fevals > limit       0.7881167950352594
 
 NONCVXUN: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   596031100036209.82μs false 1.402e-06           Timed out 11601.814
-Optim, LBFGS               810256100000453.95μs false 6.778e-04           Timed out 11589.520
-Speedmapping, acx         1000002 61219776.15μs false 1.507e-05            max_eval 11590.835
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000 19836432.79μs false 6.255e-04       GradientCalls       11601.872938242754
+Optim, LBFGS                 100000 12754757.64μs false 2.464e-03       GradientCalls       11592.670458388875
+Speedmapping, acx            100000  5986092.36μs false 3.489e-05            max_eval       11601.953005858082
 
 ENGVAL1: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       60     1458.42μs  true 5.941e-08        GradientNorm 5548.6684
-Optim, LBFGS                   54     1134.42μs  true 5.621e-08        GradientNorm 5548.6684
-Speedmapping, acx              36      336.95μs  true 2.988e-08         first_order 5548.6684
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         60     1430.83μs  true 5.941e-08        GradientNorm        5548.668419415788
+Optim, LBFGS                     54     1126.09μs  true 5.621e-08        GradientNorm        5548.668419415788
+Speedmapping, acx                36      338.21μs  true 2.988e-08         first_order        5548.668419415788
 
 NONDIA: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       14      344.22μs  true 3.304e-09        GradientNorm 1.0164104
-Optim, LBFGS                   29      419.61μs  true 1.111e-10        GradientNorm 6.1916336
-Speedmapping, acx             838     6580.93μs  true 9.376e-08         first_order 7.6409948
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         14      339.23μs  true 3.304e-09        GradientNorm   1.0164104562835172e-13
+Optim, LBFGS                     29      423.19μs  true 1.111e-10        GradientNorm    6.191633659611637e-27
+Speedmapping, acx              7575    61509.19μs  true 9.544e-08         first_order   1.4086961799976045e-10
 
 NCB20: 5010 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient     6811   500103.76μs  true 7.451e-08        GradientNorm -1092.128
-Optim, LBFGS                  994    72764.99μs  true 6.559e-08        GradientNorm -1179.943
-Speedmapping, acx           11285   577333.51μs  true 9.963e-08         first_order -1462.668
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient       6811   495858.23μs  true 7.451e-08        GradientNorm      -1092.1282194521664
+Optim, LBFGS                    994    71810.45μs  true 6.559e-08        GradientNorm      -1179.9435222805587
+Speedmapping, acx              3707   203402.61μs  true 9.977e-08         first_order      -1462.6682995664705
 
 FMINSURF: 5625 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      591    42731.70μs  true 9.845e-08        GradientNorm 1.0000000
-Optim, LBFGS                 1421    63447.18μs  true 9.284e-08        GradientNorm 1.0000000
-Speedmapping, acx            1296    33476.71μs  true 9.894e-08         first_order 1.0000000
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        591    42923.01μs  true 9.845e-08        GradientNorm        1.000000000029774
+Optim, LBFGS                   1421    63386.48μs  true 9.284e-08        GradientNorm       1.0000000000452787
+Speedmapping, acx              1106    27885.58μs  true 8.838e-08         first_order       1.0000000030982978
 
 FMINSRF2: 5625 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      652    45801.74μs  true 9.663e-08        GradientNorm 1.0000000
-Optim, LBFGS                 1647    70934.06μs  true 9.487e-08        GradientNorm 1.0000000
-Speedmapping, acx             986    25041.87μs  true 8.779e-08         first_order 1.0000240
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        652    46153.89μs  true 9.663e-08        GradientNorm       1.0000000000260174
+Optim, LBFGS                   1647    71313.03μs  true 9.487e-08        GradientNorm       1.0000000000125107
+Speedmapping, acx               922    22958.73μs  true 9.412e-08         first_order       1.0000240798224609
 
 CURLY20: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   914912100003295.18μs false 2.651e-04           Timed out -1.003162
-Optim, LBFGS               217766 26771600.75μs  true 9.865e-08        GradientNorm -1.003162
-Speedmapping, acx         1000001 79133285.05μs false 1.060e-04            max_eval -996865.5
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100000 12004205.34μs false 3.604e-04       GradientCalls    -1.0031628964755975e6
+Optim, LBFGS                 100001 11118072.99μs false 1.102e-03      Fevals > limit     -1.003162902334507e6
+Speedmapping, acx            100001  7532691.96μs false 1.220e-03      Fevals > limit       -996864.5608599131
 
 CURLY10: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient  1000002 97475128.89μs false 1.652e-04       GradientCalls -1.003162
-Optim, LBFGS               145207 15089460.65μs  true 9.985e-08        GradientNorm -1.003162
-Speedmapping, acx         1000002 71938434.84μs false 1.427e-05            max_eval -1.003162
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100001 10922296.05μs false 8.921e-05      Fevals > limit    -1.0031629001543493e6
+Optim, LBFGS                 100000 10241091.11μs false 5.139e-05       GradientCalls    -1.0031629024068014e6
+Speedmapping, acx            100001  6869515.90μs false 1.285e-04      Fevals > limit    -1.0031628459506547e6
 
 POWER: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient      443    39798.41μs  true 9.594e-08        GradientNorm 7.4850349
-Optim, LBFGS                 1566    84529.11μs  true 9.617e-08        GradientNorm 7.5108579
-Speedmapping, acx            1486    32340.62μs  true 6.974e-08         first_order 4.6809909
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient        443    39341.21μs  true 9.594e-08        GradientNorm    7.485034908869639e-11
+Optim, LBFGS                   1566    82108.14μs  true 9.617e-08        GradientNorm    7.510857984786999e-11
+Speedmapping, acx              1577    32680.18μs  true 8.088e-08         first_order    5.905735078107576e-11
 
 CURLY30: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient   780182100000548.12μs false 4.677e-04           Timed out -1.003162
-Optim, LBFGS               249498 32770187.36μs  true 9.991e-08        GradientNorm -1.003162
-Speedmapping, acx         1000000 94486810.18μs false 1.090e-04            max_eval -997056.5
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient     100001 14132980.11μs false 5.775e-04      Fevals > limit    -1.0031628952424236e6
+Optim, LBFGS                 100002 12980638.98μs false 1.361e-03      Fevals > limit    -1.0031629022904477e6
+Speedmapping, acx            100002  9187541.96μs false 1.098e-03      Fevals > limit       -997056.3651336201
 
 COSINE: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       24     4424.54μs  true 3.330e-08        GradientNorm   -9999.0
-Optim, LBFGS                   35     5438.34μs  true 3.071e-08        GradientNorm   -9999.0
-Speedmapping, acx         1000000 51755066.03μs false 9.490e+04            max_eval 8120.6312
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         24     4369.71μs  true 3.330e-08        GradientNorm                  -9999.0
+Optim, LBFGS                     35     5310.23μs  true 3.071e-08        GradientNorm                  -9999.0
+Speedmapping, acx            100002  8509210.82μs false 1.703e-04      Fevals > limit        -9994.40199192553
 
 DIXON3DQ: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient    10002   863486.98μs  true 8.791e-08        GradientNorm 1.3293951
-Optim, LBFGS                30004  1463390.28μs  true 3.806e-08        GradientNorm 1.3453068
-Speedmapping, acx           97680  2126161.42μs  true 9.999e-08         first_order 0.0005025
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient      10002   835019.55μs  true 8.791e-08        GradientNorm   1.3293951876221227e-12
+Optim, LBFGS                  30004  1619652.27μs  true 3.806e-08        GradientNorm   1.3453068856809803e-13
+Speedmapping, acx             53034  1109277.24μs  true 9.993e-08         first_order    0.0005042620860168958
 
 SPARSQUR: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log       obj
-Optim, ConjugateGradient       26     3746.06μs  true 8.631e-08        GradientNorm 8.5331301
-Optim, LBFGS                  125    12171.47μs  true 6.919e-08        GradientNorm 1.6108565
-Speedmapping, acx              73     3556.76μs  true 3.212e-08         first_order 2.2878204
+Solver                   Grad evals          time  conv   |resid|                 log                      obj
+Optim, ConjugateGradient         26     3730.77μs  true 8.631e-08        GradientNorm    8.533130180391535e-10
+Optim, LBFGS                    125    12260.35μs  true 6.919e-08        GradientNorm    1.610856536906379e-11
+Speedmapping, acx                74     3651.54μs  true 3.212e-08         first_order   2.2878208232927505e-10
 
 =#
 

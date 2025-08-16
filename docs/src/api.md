@@ -1,7 +1,7 @@
 We will refer to **1**, **2** and **3** to identify the problems:
-**1**) Accelerating convergent mapping iterations;
-**2**) Solving a non-linear systems of equations;
-**3**) Minimizing a function without constraint or with box-constraints.
+1) Accelerating convergent mapping iterations;
+2) Solving a non-linear systems of equations;
+3) Minimizing a function without constraint or with box-constraints.
 We will also refer to Alternating cyclic extrapolations as **ACX** and Anderson Acceleration as **AA**.
 
 `speedmapping(x0; kwargs...)`
@@ -68,8 +68,8 @@ speedmapping([1.,1.]; g!  =  (grad, x)  -> grad .= 4x.^3, lower = [-Inf,2.])
  The number of iterations before the algorithm terminates.
 - `time_limit :: Real  =  Inf`
   The time limit before stopping (if `time_limit == Inf`, `time()` will not be called at each iteration).
-- `reltol_resid_grow :: Real  = algo == :acx ? 10000. : 4.`
- `reltol_resid_grow` is a stabilizing parameter. After a mapping/descent step/iteration, the distance between the current `x` and the previous `x` will be reduced until the residual norm (`|xout - xin|`, `|res|`, or `|grad|`) does not increase more than a by a factor `reltol_resid_grow`. It is set lower for **AA** because this algorithm is more sensitive to low-quality iterations and because problem **2** may involve highly divergent functions. `reltol_resid_grow` should be greater than 1 to avoid stalling.
+- `reltol_resid_grow :: Real = algo == :aa ? 4. : (g! !== nothing || g !== nothing) ? 1e5 : 100`
+ `reltol_resid_grow` is a problem-specific stabilizing parameter. After a mapping/descent step/iteration, the distance between the current `x` and the previous `x` is reduced until the residual norm (`|xout - xin|`, `|res|`, or `|grad|`) does not increase more than a by a factor `reltol_resid_grow`. It is set to 4 for **AA** because this algorithm is more sensitive to low-quality iterations and because problem **2** may involve highly divergent functions. For **ACX** it is set to 100 for problem **1**, and for 1e5 for problem **3**.
 - `buffer::  AbstractFloat  = (m! !==  nothing  || m !==  nothing) ?  0.05  :  0.`
  `buffer`is used in conjunction with `lower` or `upper`. If an iterate `x` lands outside a constraint, `buffer` leaves some distance between `x` and the constraint. It is set by default to `0.05` for **1** because constraints may be used to avoid landing immediately on bad values like saddle points at which the algorithm would stall. 
 - `store_trace ::  Bool = false`
@@ -91,7 +91,7 @@ speedmapping([1.,1.]; g!  =  (grad, x)  -> grad .= 4x.^3, lower = [-Inf,2.])
   The maximum condition number of the matrix of past residuals used to compute the next iterate. Setting it too high increases the risk of numerical imprecision.
 - `rel_default :: Real  =  1.`
   The default relaxation parameter (also referred to as damping or mixing parameter).
-- `adarel :: Symbol = m! !== nothing ? :minimum_distance : :none`
+- `adarelax :: Symbol = m! !== nothing ? :minimum_distance : :none`
  Adaptive relaxation. For now, only `:minimum_distance` is implemented (see [Lepage-Saucier, 2024](https://arxiv.org/abs/2408.16920) although changes were made to the regularization). It is set to `:none` for problem **2** since `:minimum_distance` requires convergent mapping to be useful.
 - `composite :: Symbol = :none`
  Composite Anderson Acceleration by [Chen and Vuik, 2022](https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096).

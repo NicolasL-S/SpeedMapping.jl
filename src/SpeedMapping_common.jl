@@ -73,43 +73,43 @@ end
 FN = Union{Function, Nothing}
 
 """
-`speedmapping(x0; kwargs...)`  implements two algorithms:
-- Alternating cyclic extrapolations (**ACX**) [Lepage-Saucier, 2024](https://www.sciencedirect.com/science/article/abs/pii/S0377042723005514)
-- Anderson Acceleration (**AA**) [Anderson, 1964](https://dl.acm.org/doi/10.1145/321296.321305)
+SpeedMapping solves three types of problems:
+1. Accelerating convergent mapping iterations
+2. Solving non-linear systems of equations
+3. Minimizing a function, possibly with box constraints
 
-To solve three types of problems:
-**1**) Accelerate convergent mapping iterations (**ACX** or **AA**);
-**2**) Solve non-linear systems of equations (**AA** only);
-**3**) minimize a function without constraint or with box-constraints (**ACX** only).
+using two algorithms:
+- Alternating cyclic extrapolations (**ACX**)
+- Anderson Acceleration (**AA**)
+
+`speedmapping(x0; kwargs...)`
 
 `x0 :: T` is the starting point and defines the type:
 - For **ACX**: `x0` can be of type real or complex with mutable or immutable containers like Abstract Array, Static Array, Scalar, Tuple.
 - For **AA**: `x0` should be a mutable AbstractArray{AbstractFloat}.
-### Keyword arguments
-`algo :: Symbol  = r! !==  nothing  ?  :aa  :  :acx` determines the method used, either `:acx` or `:aa` (default: `:acx`, unless `r!` is used).
 
 #### Keyword arguments defining the problem
-One and _only one_ of the following argument should be supplied. Note: all of type `FN = Union{Function, Nothing}`.
+One and _only one_ of the following argument should be supplied. All of them are of type `FN = Union{Function, Nothing}`.
 
-`m! ::  FN  =  nothing` in-place mapping function for **1** with mutable arrays as input. 
+`m! ::  FN  =  nothing` in-place mapping function for problem **1** with mutable arrays as input. 
 ```Julia
 speedmapping([1.,1.]; m! = (xout, xin) -> xout .=  0.9xin)
 ```
-`r! ::  FN  =  nothing` in-place residual function for **2** with mutable arrays as input. 
+`r! ::  FN  =  nothing` in-place residual function for problem **2** with mutable arrays as input. 
 ```Julia
 speedmapping([1.,1.]; r! = (resid, x) -> resid .=  -0.1x)
 ```
-`g! ::  FN  =  nothing` in-place gradient function for **3** with mutable arrays as input. 
+`g! ::  FN  =  nothing` in-place gradient function for problem **3** with mutable arrays as input. 
 ```Julia
 speedmapping([1.,1.]; g! = (grad, x) -> grad .=  4x.^3)
 ```
-`m` and `g` are versions of `m!` and `g!` with a scalar or `StaticArray` as input and output.
+`m` and `g` are versions of `m!` and `g!` with immutable types like `Real` or `Complex` scalar, `StaticArray` or `Tuple` as input and output.
 ```Julia
 using StaticArrays
 speedmapping(1.; m = x -> 0.9x)
 speedmapping(SA[1.,1.]; m = x -> 0.9x)
 speedmapping(1.; g = x -> 4x^3)
-speedmapping(SA[1.,1.]; g = x -> 4x.^3)
+speedmapping((1.,1.); g = x -> (4x[1]^3,3x[2] - 1))
 ```
 `f ::  FN  =  nothing` computes an objective function. 
 - For **3**, `f` will be used to initialize the learning rate better.
@@ -119,10 +119,13 @@ speedmapping(SA[1.,1.]; g = x -> 4x.^3)
 ```Julia
 speedmapping([1.,1.]; g!  =  (grad, x)  -> grad .= 4x.^3, lower = [-Inf, 2.])
 ```
-#### Other keyword arguments
-- Affecting both **acx** and **aa**: `cache`,  `abstol`, `pnorm`, `maps_limit`, `iter_limit`, `time_limit`, `reltol_resid_grow`, `buffer`, `store_trace`
-- Affecting **acx**: `orders`, `initial_learning_rate`
-- Affecting **aa**: `lags`, `condition_max`, `adarel`, `rel_default`, `composite`, `abstol_obj_grow`
+### Other keyword arguments
+
+`algo :: Symbol  = r! !==  nothing  ?  :aa  :  :acx` determines the method used, either `:acx` or `:aa` (default: `:acx`, unless `r!` is used).
+
+- Affecting both **ACX** and **AA**: `cache`,  `abstol`, `pnorm`, `maps_limit`, `iter_limit`, `time_limit`, `reltol_resid_grow`, `buffer`, `store_trace`
+- Affecting **ACX**: `orders`, `initial_learning_rate`
+- Affecting **AA**: `lags`, `condition_max`, `adarelax`, `relax_default`, `composite`, `abstol_obj_grow`
 """
 function speedmapping(
         x0 :: T; f :: FN = nothing, g! :: FN = nothing, g :: FN = nothing, m! :: FN = nothing, 
@@ -130,7 +133,7 @@ function speedmapping(
         cache :: Union{AcxCache, AaCache, Nothing} = nothing, 
         orders :: Tuple = (2,3,3), initial_learning_rate :: Real = 1., initialize_learning_rate :: Bool = true,
         lags :: Integer = 30, condition_max :: Real = 1e6, rel_default :: Real = 1., 
-        adarel :: Symbol = m! !== nothing ? :minimum_distance : :none, composite :: Symbol = :none, 
+        adarelax :: Symbol = m! !== nothing ? :minimum_distance : :none, composite :: Symbol = :none, 
         abstol :: AbstractFloat = 1e-8, pnorm :: Real = 2., 
         maps_limit :: Real = 1_000_000_000, iter_limit = 1_000_000_000, time_limit :: Real = Inf, 
         reltol_resid_grow :: Real = algo == :aa ? 4. : (g! !== nothing || g !== nothing) ? 1e5 : 100, 
@@ -176,7 +179,7 @@ function speedmapping(
 
         composite ∉ (:none, :aa1, :acx2) && throw(ArgumentError("Unknown composite type"))
 
-        return aa(f, r!, m!, cache, x0, condition_max, adarel, FT(rel_default), composite, 
+        return aa(f, r!, m!, cache, x0, condition_max, adarelax, FT(rel_default), composite, 
             params_F, params_I, bounds, max_time, store_trace)
     end
 

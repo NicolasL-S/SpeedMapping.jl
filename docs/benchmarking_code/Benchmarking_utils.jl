@@ -21,21 +21,17 @@ function one_problem_one_solver(wrapper, problem, abstol, compute_norm, time_lim
 		_time = do_benchmark[] ? median(bench.times)/1e9 : time_last_execution[]
 	else
 		time_start = time()
-		#=
-		out_sol, out_Fevals, out_log = wrapper(problem, abstol, time_start, Fevals_limit, time_limit)
-		sol .= out_sol
-		Fevals[] = out_Fevals
-		log[] = out_log 
-		=#
 		sol[:], Fevals[], log[] = wrapper(problem, abstol, time_start, Fevals_limit, time_limit)
 		time_last_execution[] = time() - time_start
 		_time = time_last_execution[]
 	end
 	time_last_execution[] > time_limit && (log[] = "Timed out")
 	Fevals[] > Fevals_limit && (log[] = "Fevals > limit")
-	residual_norm = compute_norm(problem, sol) # compute_norm deals with the fact that i) some problems provide map!, some provide residuals r! or some provide gradients g!, and 2) we may want to compute 2-norms or Inf-norms
+	out_norm = compute_norm(problem, sol) # compute_norm deals with the fact that i) some problems provide map!, some provide residuals r! or some provide gradients g!, and 2) we may want to compute 2-norms or Inf-norms
+	residual_norm = out_norm[1]
+	log_norm = length(out_norm) > 1 ? " " * out_norm[2] : "" # If I want to output a comment when computing the norm
 	optional = hasproperty(problem, :obj) && problem.obj !== nothing ? (obj = problem.obj(sol),) : ()
-	return Fevals[], _time, do_benchmark[] && residual_norm ≤ abstol, residual_norm, log[], optional
+	return Fevals[], _time, residual_norm ≤ abstol, residual_norm, log[]*log_norm, optional
 end
 
 padleft(in, L) = " "^max(0,(L - length(string(in)))) * first(string(in),L)
@@ -51,7 +47,7 @@ function one_problem_many_solvers!(problems, pr_name, time_limit, abstol,
 
 	# Text output
 	out_str = "\n" * pr_name * ": $(length(problem.x0)) parameters, abstol = $(abstol[pr]).\n" 
-	titlevec = ((F_name, 10), ("time", 14), ("conv", 6), ("|resid|", 10), ("log", 20))
+	titlevec = ((F_name, 10), ("time", 14), ("conv", 6), ("|resid|", 10), ("log", 30))
 	out_str *= padright("Solver", Lname) * prod([padleft(item...) for item in titlevec])
 	hasproperty(problem, :obj) && problem.obj !== nothing && (out_str *= padleft("obj", 25))
 	out_str *= "\n"
@@ -67,7 +63,7 @@ function one_problem_many_solvers!(problems, pr_name, time_limit, abstol,
 		# Text output
 		t_str = cfmt("%10.2f ", time * (10^(3tunits[pr] - 3))) * ("s", "ms", "μs")[tunits[pr]]
 		res_str = @sprintf "%.3e" res
-		resvec = ((Feval, 10), (t_str, 14), (converged, 6), (res_str, 10), (first(rlog,19), 20))
+		resvec = ((Feval, 10), (t_str, 14), (converged, 6), (res_str, 10), (first(rlog,29), 30))
 		out_str *= padright(name, Lname) * prod([padleft(res...) for res in resvec])
 		hasproperty(optional, :obj) && (out_str *= " "*padleft(optional.obj, 24))
 		out_str *= "\n"
@@ -77,15 +73,19 @@ end
 
 function many_problems_many_solvers(problems, fixed_point_solvers, problem_names, 
 		solver_names, compute_norm; abstol = 1e-7, time_limit = 10., tunits = 1, 
-		F_name = "F evals", gen_Feval_limit = problem -> 100000, draws = 1, proper_benchmark = true
+		F_name = "F evals", gen_Feval_limit = (problem, time_limit) -> 100000, draws = 1, 
+		proper_benchmark = true, results = nothing, problem_start = 1
 	)
 	length(tunits) == 1 && (tunits = tunits * ones(length(problem_names)))
 	length(abstol) == 1 && (abstol = abstol * ones(length(problem_names)))
 	length(time_limit) == 1 && (time_limit = time_limit * ones(length(problem_names)))
 
 	Lname = maximum(length, solver_names) + 1 # Numb of character to display names
-	results = [Dict{String, Tuple{Float64, Float64}}() for i in eachindex(problems), j in 1:draws]
-	for pr in eachindex(problem_names)
+	if results == nothing
+		results = [Dict{String, Tuple{Float64, Float64}}() for i in eachindex(problems), j in 1:draws]
+	end
+	
+	for pr in problem_start:length(problem_names)
 		pr_name = problem_names[pr]
 		if proper_benchmark
 			for draw = 1:draws # If the functions generate random data eash draw

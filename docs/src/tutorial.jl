@@ -8,7 +8,7 @@
 # - Anderson Acceleration (**AA**) [Anderson, 1964](https://dl.acm.org/doi/10.1145/321296.321305)
 
 #
-# This tutorial will display its main functionality on simple problems. To see which specification may be more performant for your problem, the [Benchmarks section] compares all of them, along with other Julia packages
+# This tutorial will display its main functionality on simple problems. To see which specification may be more performant for your problem, the Benchmarks section compares all of them, along with other Julia packages
 # with similar functionalities.
 #
 # # Accelerating convergent mapping iterations
@@ -52,8 +52,8 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 
 # By default, **AA** uses [adaptive relaxation](https://arxiv.org/abs/2408.16920), which can 
 # reduce the number of iterations. It is specified by the keyword argument 
-# `adarel = :minimum_distance`. For constant relaxation, set `adarel = :none`.
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarel = :none);
+# `adarelax = :minimum_distance`. For constant relaxation, set `adarelax = :none`.
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarelax = :none);
 
 # Another recent development for **AA** is **Composite AA** by [Chen and Vuik, 2022](https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096).
 # A one-step **AA** iteration (using 2 maps) is inserted between 2 full **AA** steps, which reduces 

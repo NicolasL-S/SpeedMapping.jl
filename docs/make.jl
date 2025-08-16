@@ -17,6 +17,4 @@ makedocs(
                 "API" => "api.md",
                 "Benchmarks" => "benchmarks.md"
                ])
-#deploydocs(;
-#    repo="github.com/NicolasL-S/SpeedMapping.jl.git",
-#)
+deploydocs(; repo="github.com/NicolasL-S/SpeedMapping.jl.git")

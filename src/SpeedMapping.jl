@@ -1,5 +1,5 @@
 """
-$(read("README.md", String))
+$(read(joinpath((@__DIR__)[1:end-4], "README.md"), String))
 """
 module SpeedMapping
 
@@ -7,7 +7,7 @@ module SpeedMapping
 	using MaybeInplace
 	using LinearAlgebra
 	using StaticArrays: FieldVector
-	using ForwardDiff
+	#using ForwardDiff
 	#using AccurateArithmetic: dot_oro
 	
 	# --- include ---
