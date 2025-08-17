@@ -130,21 +130,20 @@ x0s = @SVector ones(n);
 
 res_static = speedmapping(x0s; m = x -> power_iteration(x, As));
 
-# Comparing speed gains
+# Comparing speed gains of eigen, allocting, pre-allocating, and non allocating
 
-using BenchmarkTools
+using BenchmarkTools, Unitful
 bench_eigen = @benchmark eigen($A);
 bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A));
 bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache);
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As));
-times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])));
-times_out = [t*" "*string(times[i]) * " ns" for (i, t) in enumerate(("eigen:         ", "Allocating:    ", "Pre-allocated: ", "Non allocating:"))];
-display(times_out)
+times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times]))); # times_out = [t*" "*string(times[i]) * " ns" for (i, t) in enumerate(("eigen:         ", "Allocating:    ", "Pre-allocated: ", "Non allocating:"))];
+display(times .* u"ns")
 
 
 # ## Working with scalars
 #
-# `m` also accepts scalar functions and tuples.
+# `m` also accepts scalars and tuples.
 
 speedmapping(0.5; m = cos);
 speedmapping((0.5, 0.5); m = x -> (cos(x[1]), sin(x[2])));
