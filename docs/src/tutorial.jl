@@ -69,36 +69,36 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 # # negative log likelihood.
 function neg_log_likelihood(x)
 	freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
-    p, μ₁, μ₂ = x
-    yfact = μ₁expy = μ₂expy = 1.
+    p, μ1, μ2 = x
+    yfact = μ1expy = μ2expy = 1.
     l = 0.
     for y in eachindex(freq)
-        l += freq[y] * log((p * exp(-μ₁) * μ₁expy + 
-                        (1 - p) * exp(-μ₂) * μ₂expy) / yfact)
+        l += freq[y] * log((p * exp(-μ1) * μ1expy + 
+                        (1 - p) * exp(-μ2) * μ2expy) / yfact)
         yfact *= Float64(y)
-        μ₁expy *= μ₁
-        μ₂expy *= μ₂
+        μ1expy *= μ1
+        μ2expy *= μ2
     end
     return -l
 end
 
 function EM_map(xout, xin)
 	freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
-    p, μ₁, μ₂ = xin
-    sum_freq_z₁ = sum_freq_z₂ = sum_freq_y_z₁ = sum_freq_y_z₂ = 0.0
-    μ₁expy = μ₂expy = 1.0
+    p, μ1, μ2 = xin
+    sum_freq_z1 = sum_freq_z2 = sum_freq_y_z1 = sum_freq_y_z2 = 0.0
+    μ1expy = μ2expy = 1.0
     for i in eachindex(freq)
-        z = p * exp(-μ₁) * μ₁expy / (p * exp(-μ₁) * μ₁expy + (1. - p) * exp(-μ₂) * μ₂expy)
-        sum_freq_z₁   += freq[i] * z
-        sum_freq_z₂   += freq[i] * (1.0 - z)
-        sum_freq_y_z₁ += (i-1) * freq[i] * z
-        sum_freq_y_z₂ += (i-1) * freq[i] * (1.0 - z)
-        μ₁expy *= μ₁
-        μ₂expy *= μ₂
+        z = p * exp(-μ1) * μ1expy / (p * exp(-μ1) * μ1expy + (1. - p) * exp(-μ2) * μ2expy)
+        sum_freq_z1   += freq[i] * z
+        sum_freq_z2   += freq[i] * (1.0 - z)
+        sum_freq_y_z1 += (i-1) * freq[i] * z
+        sum_freq_y_z2 += (i-1) * freq[i] * (1.0 - z)
+        μ1expy *= μ1
+        μ2expy *= μ2
     end
-    xout[1] = sum_freq_z₁ / sum(freq)
-    xout[2] = sum_freq_y_z₁ / sum_freq_z₁
-    xout[3] = sum_freq_y_z₂ / sum_freq_z₂
+    xout[1] = sum_freq_z1 / sum(freq)
+    xout[2] = sum_freq_y_z1 / sum_freq_z1
+    xout[3] = sum_freq_y_z2 / sum_freq_z2
     return xout
 end
 
