@@ -23,17 +23,18 @@ end
 end
 
 # Accurate dot product to improve the precision of extrapolations (at the cost of slightly longer compute time)
+# Unfortunately, dot_oro caused compatibility issues
 #=
 function accurate_dot(x::T, y::T) where T<:Union{AbstractArray{Float32},AbstractArray{Float64}}
     return dot_oro(x, y)
 end
-=#
 accurate_dot(x, y) = dot(x,y)
-
 accurate_cdot(x, y, FT) :: FT = (eltype(x) <: Real && eltype(y) <: Real) ? accurate_dot(x, y) : real(dot(x,y))
 accurate_cdot(x, FT) = accurate_cdot(x, x, FT)
-cdot(x, y, FT) :: FT = real(dot(x,y))
-cdot(x, FT) :: FT = cdot(x, x, FT)
+=#
+
+cdot(x, y, FT) :: FT = real(dot(x,y)) where FT <: AbstractFloat # To make sure that the compiler infers the type FT, even with unusual inputs like complex arrays. Not entirely sure this is necessary, but better safe than sorry.
+cdot(x, FT) :: FT = cdot(x, x, FT) where FT <: AbstractFloat # To make sure that the compiler infers the type FT, even with unusual inputs like complex arrays. Not entirely sure this is necessary, but better safe than sorry.
 
 #####
 ##### Core functions

@@ -220,8 +220,9 @@ function acx(
         if good_maps # Computing σ
             p == 3 && (@bb @. r3 += FT(-2) * r2 + r1)
             @bb @. r2 -= r1
-            σ = -abs(p == 2 ? accurate_cdot(r2, r1, FT) / accurate_cdot(r2, FT) : 
-                accurate_cdot(r3, r2, FT) / accurate_cdot(r3, FT))
+#            σ = -abs(p == 2 ? accurate_cdot(r2, r1, FT) / accurate_cdot(r2, FT) : 
+#                accurate_cdot(r3, r2, FT) / accurate_cdot(r3, FT))
+            σ = -abs(p == 2 ? cdot(r2, r1, FT) / cdot(r2, FT) : cdot(r3, r2, FT) / cdot(r3, FT))
         end
 
         if isbad(σ) || !good_maps

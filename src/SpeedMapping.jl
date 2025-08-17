@@ -7,7 +7,7 @@ module SpeedMapping
 	using MaybeInplace
 	using LinearAlgebra
 	using StaticArrays: FieldVector
-	#using ForwardDiff
+	using ForwardDiff
 	#using AccurateArithmetic: dot_oro
 	
 	# --- include ---

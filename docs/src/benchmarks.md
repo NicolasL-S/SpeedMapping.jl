@@ -59,3 +59,4 @@ A problem considered having converged when the |gradient_i| < 1e-7 for all i for
 
 ![Performance, Optim, constraint](https://raw.githubusercontent.com/NicolasL-S/SpeedMapping.jl/refs/heads/MajorRefactor/docs/assets/optimization_constr_performance.svg)
 
+Among the four algorithms tested, there seems to be no reason not to use ACX. It would be interesting to test other bound-constrained solvers like tron from [JSOSolvers.jl](https://jso.dev/JSOSolvers.jl/stable/solvers/).
