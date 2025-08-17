@@ -138,8 +138,9 @@ bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(
 bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache); # Pre-allocated
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)); # Non allocating
 times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times]))); # .* u"ns";
-display([t*" "*string(times[i]/1000) * " μs" for (i, t) in 
-    enumerate(("eigen:         ", "Allocating:    ", "Pre-allocated: ", "Non allocating:"))])
+times_out = [t*" "*string(times[i]/1000) * " μs" for (i, t) in enumerate(("eigen:         ", "Allocating:    ", "Pre-allocated: ", "Non allocating:"))];
+display(times_out)
+
 
 # ## Working with scalars
 #
