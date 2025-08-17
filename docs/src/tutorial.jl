@@ -8,15 +8,16 @@
 # - Anderson Acceleration (**AA**) [Anderson, 1964](https://dl.acm.org/doi/10.1145/321296.321305)
 
 #
-# This tutorial will display its main functionality on simple problems. To see which specification may be more performant for your problem, the Benchmarks section compares all of them, along with other Julia packages
-# with similar functionalities.
+# This tutorial will display its main functionality on simple problems. To see which specification 
+# may be more performant for your problem, the **Benchmarks** section compares all of them, along 
+# with other Julia packages with similar functionalities.
 #
 # # Accelerating convergent mapping iterations
 #
 # Let $F:\mathbb{R}^n\rightarrow\mathbb{R}^n$ and $x \in \mathbb{R}^n$ be a reasonable starting 
-# point. If the series $x, F(x), F(F(x)),...$ converges to $x^*$ where $F(x^*) = x^*$, the **ACX** algorithm 
-# and [**AA** with adative relaxation](https://arxiv.org/abs/2408.16920) can be used to accelerate the 
-# convergence. If $F$ does not converge, the problem can simply be redefined as 
+# point. If the series $x, F(x), F(F(x)),...$ converges to $x^*$ where $F(x^*) = x^*$, the **ACX** 
+# algorithm and [**AA** with adative relaxation](https://arxiv.org/abs/2408.16920) can be used to 
+# accelerate the convergence. If $F$ does not converge, the problem can simply be redefined as 
 # [solving $G(x) = F(x) - x = 0$](#Solving-non-linear-systems-of-equations).
 #
 # Let's find the dominant eigenvalue of a matrix $A$ using the accelerated [Power iteration](https://en.wikipedia.org/wiki/Power_iteration).
@@ -39,8 +40,7 @@ x0 = ones(n);
 
 # Speedmapping has one mandatory argument: the starting point ``x0``. The mapping is specified with the keyword argument ``m!``.
 using SpeedMapping
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A));
-display(res)
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A))
 
 # The dominant eigenvalue is:
 v = res.minimizer; ## The dominant eigenvector
@@ -48,7 +48,7 @@ dominant_eigenvalue = v'A*v/v'v;
 eigen(A).values[10] ≈ dominant_eigenvalue
 
 # With `m!`, the default algorithm is `algo = :acx`. To switch, set `algo = :aa`.
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa);
+speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa)
 
 # By default, **AA** uses [adaptive relaxation](https://arxiv.org/abs/2408.16920), which can 
 # reduce the number of iterations. It is specified by the keyword argument 
@@ -63,15 +63,17 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :acx2);
 
 # Some mapping iterations maximize or minimize a certain objective function. Since some **AA** steps 
-# can deteriorate the objective, it would be best to avoid them by falling back to the last map. This 
-# can be done by supplying an objective function (assumed to be a minimization 
-# problem) using `f` as keyword argument. Here is an illustrative example
-# using the [EM-algorithm](https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm).
+# can deteriorate the objective, it would be best to avoid them by falling back to the last map. 
+# This can be done by supplying an objective function (assumed to be a minimization problem) using 
+# `f` as keyword argument. Here is an illustrative
+# [EM-algorithm](https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm) 
+# example from the library FixedPointTestProblems.jl.
 
 using FixedPointTestProblems
 EMx0, EMmap!, EMobj = testproblems["Hasselblad, Poisson mixtures"]();
-speedmapping(EMx0; m! = EMmap!, algo = :aa);
-speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa);
+res1 = speedmapping(EMx0; m! = EMmap!, algo = :aa);
+res2 = speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa);
+println("Without objective: maps: $(res1.maps), objective evaluations: $(res1.f_calls)\nWith objective: maps: $(res2.maps), objective evaluations: $(res2.f_calls)")
 
 # ## Avoiding memory allocation
 #
@@ -107,17 +109,19 @@ speedmapping(x0s; m = x -> power_iteration(x, As));
 # Comparing speed gains
 
 using BenchmarkTools
-t_eigen = @benchmark eigen($A)
-t_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A)); # Allocating
-t_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache); # Pre-allocated
-t_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)) # Non allocating
-[median(t) for t in (t_eigen, t_alloc, t_prealloc, t_nonalloc)]
+bench_eigen = @benchmark eigen($A);
+bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A));
+bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache); # Pre-allocated
+bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)); # Non allocating
+t = Int.(round.(median.((bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times))));
+println("eigen: $(t[1]) ns\nAllocating: $(t[2]) ns\nPre-allocated: $(t[3]) ns\nNon allocating: $(t[4]) ns")
 
 # ## Working with scalars
 #
-# `m` also accepts scalar functions.
+# `m` also accepts scalar functions and tuples.
 
 speedmapping(0.5; m = cos);
+speedmapping((0.5, 0.5); m = x -> (cos(x[1]), sin(x[2])));
 
 # # Solving non linear systems of equations
 #
@@ -125,9 +129,9 @@ speedmapping(0.5; m = cos);
 # constant relaxation should be used (and is set by default). The keyword argument to supply $G$ is 
 # `r!`.
 
-function r!(res, x)
-	res[1] = x[1]^2;
-	res[2] = (x[2] + x[1])^3;
+function r!(resid, x)
+	resid[1] = x[1]^2;
+	resid[2] = (x[2] + x[1])^3;
 end
 
 speedmapping([1.,2.]; r! = r!);
@@ -146,7 +150,7 @@ function g_Rosenbrock!(grad, x) # Rosenbrock gradient
 	grad[2] = -200 * (x[1]^2 - x[2]);
 end
 
-speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!);
+display(speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!))
 
 # The function objective is only used to compute a safer initial learning rate. It can be omitted.
 speedmapping([-1.2, 1.]; g! = g_Rosenbrock!);

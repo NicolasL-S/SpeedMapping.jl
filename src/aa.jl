@@ -98,7 +98,7 @@ function do_after_m!(g, xout, xin, ind, bounds, buffer)
         box_constraint!(xout, xin, bounds, buffer, true)
         g .= xout .- xin
     end
-    return true, lpnorm(g, 2)
+    return true, sumsq(g)
 end
 
 function safe_map!(m!, r!, c, ind, max_new_normsq_g, bounds, buffer, true_shape)
@@ -288,7 +288,7 @@ function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default,
         
         normsq_g = safe_map!(m!, r!, c, ind, max_new_normsq_g, bounds, buffer, true_shape)
 
-        lpnormsq_g = pnorm == 2 ? normsq_g : lpnorm(r_now, pnorm)^2
+        lpnormsq_g = pnorm == 2 ? normsq_g : lpnorm(c.g, pnorm)^2
 
         store_trace && push!(trace, AaState{T, FT}(copy(c.x), ind.lags, β, lpnormsq_g))
 
@@ -310,7 +310,8 @@ function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default,
             
             box_constraint!(c.temp_x, c.y, bounds, buffer, true)
             @. c.temp_y = c.temp_x - c.y - c.g
-            σ = accurate_dot(c.temp_y, c.g) / accurate_dot(c.temp_y,c.temp_y)
+            #σ = accurate_dot(c.temp_y, c.g) / accurate_dot(c.temp_y,c.temp_y)
+            σ = dot(c.temp_y, c.g) / dot(c.temp_y,c.temp_y)
             if composite == :aa1
                 @. c.temp_x = c.y - σ * (c.temp_x - c.y)
             elseif composite == :acx2

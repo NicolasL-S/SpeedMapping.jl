@@ -94,9 +94,16 @@ end
 # Test for aa
 @testset "AA" begin
 	# Test with m!
-	aa_res_lin = speedmapping(zeros(n_lin); m! = map_diag!, algo = :aa, store_trace=true)
+	aa_res_lin = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true)
 	@test aa_res_lin.minimizer'aa_res_lin.minimizer ≈ 13.1725
 	@test aa_res_lin.aa_trace[1].x[1] == 0
+
+	# Test with m! and other specs
+    min_aa_res_lin2 = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true, composite = :aa1, adarelax = :none, pnorm = Inf).minimizer
+	@test min_aa_res_lin2'min_aa_res_lin2 ≈ 13.1725
+
+    min_aa_res_lin3 = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true, composite = :acx2, lags = 3, abstol = 1e-10, pnorm = 1).minimizer
+    @test min_aa_res_lin3'min_aa_res_lin3 ≈ 13.1725
 
 	# Test with r!
 	aa_res_lin_r = speedmapping(zeros(n_lin); r! = r_diag!, algo = :aa)
