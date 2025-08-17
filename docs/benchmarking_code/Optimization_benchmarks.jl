@@ -2,29 +2,18 @@
 # by tayloring the ad to each specific problem like in ... Interestingly, the NonlinearSolve, Default PolyAlg. did
 # solve all 23 problems.
 
+absolute_path_to_docs = ""
+path_plots = absolute_path_to_docs*"assets/"
+path_out = absolute_path_to_docs*"benchmarking_code/Output/"
+
 using BenchmarkTools, Optim, JLD2, FileIO, SpeedMapping, ArtificialLandscapes, LinearAlgebra, Logging, LBFGSB
 
-ArtificialLandscapes.check_gradient_indices(gradient, x) = nothing # Very bad! But necessary for LBFGSB
+ArtificialLandscapes.check_gradient_indices(gradient, x) = nothing # Very bad! But necessary for LBFGSB to work
 
-absolute_path = ""
-path_plots = absolute_path*"assets/"
-path_out = absolute_path*"benchmarking_code/Output/"
 
-include(absolute_path * "benchmarking_code/Benchmarking_utils.jl")
+include(absolute_path_to_docs * "benchmarking_code/Benchmarking_utils.jl")
 
 Logging.disable_logging(Logging.Warn)
-
-macro noprint(expr)
-	quote
-		let so = stdout
-			redirect_stdout(devnull)
-			res = $(esc(expr))
-			redirect_stdout(so)
-			res
-		end
-	end
-end
-
 
 # Solver wrappers
 optim_solvers = Dict{AbstractString, Function}()
@@ -47,7 +36,7 @@ function Optim_wrapper(problem, abstol, maps_limit, time_limit, algo)
 	x0, obj, grad! = problem
 	res = optimize(obj, grad!, x0, algo, Optim.Options(x_abstol = NaN, x_reltol = NaN, 
 		f_abstol = NaN, f_reltol = NaN, g_abstol = abstol, g_calls_limit = maps_limit, 
-		time_limit = time_limit, iterations = 100_000_000))
+		time_limit = time_limit, iterations = maps_limit))
 	return res.minimizer, res.g_calls, string(res.termination_code)
 end
 
@@ -57,15 +46,30 @@ optim_solvers["Optim, LBFGS"] = (problem, abstol, start_time, maps_limit, time_l
 optim_solvers["Optim, ConjugateGradient"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
 	Optim_wrapper(problem, abstol, maps_limit, time_limit, ConjugateGradient())
 
+# This is needed because optim does not seem to track the total number of gradient evaluations, 
+# and LBFGSB does not track evaluation time
+function _grad!(grad!, gradient, x, gevals, maps_limit, timesup)
+	gevals[] += 1
+	if time() < timesup && gevals[] <= maps_limit
+		grad!(gradient, x)
+	else
+		gradient .= 0 # To trick the solver into thinking it has reached the minimum
+	end
+	return gradient
+end
+
 function Optim_wrapper_constr(problem, abstol, maps_limit, time_limit, algo)
 	x0, obj, grad! = problem
 	upper = x0 .+ 0.5
 	lower = -Inf .* ones(length(x0))
+	gevals = Ref(0)
+	timesup = time() + time_limit
 	try
-		res = optimize(obj, grad!, lower, upper, x0, Fminbox(algo), Optim.Options(x_abstol = NaN, 
+		res = optimize(obj, (gradient, x) -> _grad!(grad!, gradient, x, gevals, maps_limit, timesup), 
+			lower, upper, x0, Fminbox(algo), Optim.Options(x_abstol = NaN, 
 			x_reltol = NaN, f_abstol = NaN, f_reltol = NaN, g_abstol = abstol, 
-			g_calls_limit = maps_limit, time_limit = time_limit, iterations = 100_000_000))
-		return res.minimizer, res.g_calls, string(res.termination_code)
+			g_calls_limit = maps_limit, time_limit = time_limit, iterations = maps_limit))
+		return res.minimizer, gevals[], string(res.termination_code)
 	catch e # To catch errors in line search
 		return NaN .* ones(length(x0)), 0, sprint(showerror, typeof(e))
 	end
@@ -77,18 +81,9 @@ optim_solvers_constr["Optim, LBFGS"] = (problem, abstol, start_time, maps_limit,
 optim_solvers_constr["Optim, ConjugateGradient"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
 	Optim_wrapper_constr(problem, abstol, maps_limit, time_limit, ConjugateGradient())
 
-function _grad!(grad!, gradient, x, gevals, timesup)
-	gevals[] += 1
-	if time() < timesup
-		grad!(gradient, x)
-	else
-		gradient .= 0 # To trick the solver into thinking it has reached the minimum
-	end
-	return gradient
-end
-
 optimizer = L_BFGS_B(10000, 10) # 10000 is the maximum problem size, 10 is the number of past lags used for LBFGS (same as Optim's default)
 
+global oldstd = stdout
 function LBFGSB_wrapper(problem, abstol, maps_limit, time_limit, optimizer)
 	x0, obj, grad! = problem
 	n = length(x0)
@@ -98,11 +93,14 @@ function LBFGSB_wrapper(problem, abstol, maps_limit, time_limit, optimizer)
 	bounds[3,:] .= x0 .+ 0.5 # The upper bounds
 	gevals = Ref(0)
 	timesup = time() + time_limit
+	redirect_stdout(devnull)
 	try
-		fout, xout = @noprint optimizer(obj, (gradient, x) -> _grad!(grad!, gradient, x, gevals, timesup), x0, 
-			bounds, m = 10, factr = 0., pgtol = abstol, iprint=-1, maxfun = maps_limit, maxiter = 100_000_000)
+		fout, xout = optimizer(obj, (gradient, x) -> _grad!(grad!, gradient, x, gevals, maps_limit, timesup), x0, 
+			bounds, m = 10, factr = 0., pgtol = abstol, iprint=-1, maxfun = maps_limit, maxiter = maps_limit)
+		redirect_stdout(oldstd)
 		return xout, gevals[], ""
 	catch e # To catch errors in line search
+		redirect_stdout(oldstd)
 		return NaN .* ones(length(x0)), gevals[], sprint(showerror, typeof(e))
 	end
 end
@@ -120,8 +118,6 @@ optim_problems_names = [name for (name, l) in optim_prob_sizes][order_length]
 optim_solver_names = sort([name for (name, wrapper) in optim_solvers])
 optim_solver_constr_names = sort([name for (name, wrapper) in optim_solvers_constr])
 
-gen_Feval_limit(problem, time_limit) = 1_000_000 
-
 function compute_norm(problem, solution)
 	gout = similar(solution)
 	if sum(_isbad.(solution)) == 0
@@ -132,18 +128,24 @@ function compute_norm(problem, solution)
 	end
 end
 
+"""
+This function computes the norm of the last gradient. But since there is an upper bound of x0 + 0.5,
+when x_i is close to the bound and hase a negative gradient, we conclude that the bound is binding
+and set it to zero before computing the norm. The function also outputs the number of binding 
+constraints.
+"""
 function compute_norm_constr(problem, solution)
 	gout = similar(solution)
 	if sum(_isbad.(solution)) == 0
 		problem.grad!(gout, solution)
-		comment = "Non-binding"
+		n_binding = 0
 		for i in eachindex(gout)
 			if abs(solution[i] - (problem.x0[i] + 0.5)) < 1e-7 && gout[i] < 0
 				gout[i] = 0
-				comment = "Binding"
+				n_binding += 1
 			end
 		end
-		return norm(gout, Inf), comment
+		return norm(gout, Inf), n_binding > 0 ? "Binding ($(n_binding))" : "Non-binding"
 	else
 		NaN, ""
 	end
@@ -157,14 +159,18 @@ JLD2.@save path_out*"res_optim.jld2" res_optim_all
 title = "Performance profiles for non-linear, unconstrained optimization"
 perf_profiles(res_optim_all, title, path_plots*"optimization_performance.svg", optim_solver_names; sizef = (640, 480), stat_num = 2, max_fact = 8)
 
-res_all_constr = [Dict{String, Tuple{Float64, Float64}}() for i in eachindex(optim_problems_names)]
+redirect_stdout(oldstd) # To make sure that desired text output is visible
+res_all_constr = [Dict{String, Tuple{Float64, Float64}}() for i in eachindex(optim_problems_names)] # Preallocating in case something goes wrong and we want to restart midway ()
 res_all_constr = many_problems_many_solvers(landscapes, optim_solvers_constr, optim_problems_names, 
 	optim_solver_constr_names, compute_norm_constr; tunits = 3, F_name = "Grad evals", abstol = 1e-7, 
 	time_limit = 100., proper_benchmark = true, results = res_all_constr, problem_start = 1)
 
-JLD2.@save path_out*"res_optim_constr.jld2" res_all_cons
+JLD2.@save path_out*"res_optim_constr.jld2" res_all_constr
 title = "Performance profiles for non-linear, box-constriained optimization"
-perf_profiles(res_all_constr, title, path_plots*"perf_optim_constr.svg", optim_solver_names; sizef = (640, 480), stat_num = 2, max_fact = 8)
+perf_profiles(res_all_constr, title, path_plots*"optimization_constr_performance.svg", 
+	optim_solver_constr_names; sizef = (640, 480), stat_num = 2, max_fact = 16)
+
+
 
 #= Unconstrained output
 CLIFF: 2 parameters, abstol = 1.0e-7.
@@ -902,3650 +908,849 @@ Speedmapping, acx                74     3651.54μs  true 3.212e-08         first
 #= Constrained output
 
 CLIFF: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      278      137.02μs false 1.000e+00      NotImplemented      1.940410281452586e7
-Optim, LBFGS                  422      121.08μs  true 3.767e-09        GradientNorm       0.1997866136777351
-Speedmapping, acx             817       33.59μs  true 2.917e-11         first_order      0.19978661367769956
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           35        132.26μs  true 3.968e-09                     Binding (1)       0.2011186945926685
+Optim, ConjugateGradient        836        319.20μs  true 8.957e-09        GradientNorm Binding (1)       0.2011186945926734
+Optim, LBFGS                    271         93.02μs  true 8.920e-13        GradientNorm Binding (1)       0.2011186945975201
+Speedmapping, acx             11590        373.85μs  true 2.457e-09         first_order Binding (1)      0.20111869459266846
 
 BEALE: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       36       28.78μs  true 5.617e-08        GradientNorm   2.7979368618688495e-16
-Optim, LBFGS                   59       24.99μs  true 5.550e-08        GradientNorm   3.2946658810854153e-16
-Speedmapping, acx              58        3.13μs  true 1.346e-08         first_order   1.9632293933501833e-18
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           10         66.06μs  true 1.247e-10                     Binding (1)                 1.828125
+Optim, ConjugateGradient          0      42066.10μs false       NaN                 AssertionError                       NaN
+Optim, LBFGS                 100075      33593.89μs false 3.750e+00      Fevals > limit Non-binding       1.8281268739045795
+Speedmapping, acx            100000       3426.46μs false 2.822e-04            max_eval Non-binding       0.4727624236765404
 
 MISRA1BLS: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      319      157.06μs  true 7.530e-08        GradientNorm      0.07546468153337059
-Optim, LBFGS                  244      119.73μs  true 5.033e-08        GradientNorm       0.0754646815334532
-Speedmapping, acx         1000001   152868.99μs false 5.933e-02            max_eval        7.314802974183912
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           92        341.53μs false 3.279e-07                     Non-binding       0.0754646815763385
+Optim, ConjugateGradient        192        120.64μs  true 8.461e-11        GradientNorm Non-binding        6761.787892857144
+Optim, LBFGS                 100585      28070.93μs false 2.125e+17      Fevals > limit Non-binding        58.23834279127181
+Speedmapping, acx            100002      10252.00μs false 5.933e-02      Fevals > limit Non-binding       7.3170150660192546
 
 Hosaki: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       12       11.97μs  true 8.817e-08        GradientNorm       -2.345811576101299
-Optim, LBFGS                   18       10.61μs  true 1.361e-08        GradientNorm      -2.3458115761012923
-Speedmapping, acx              15        1.29μs  true 7.278e-09         first_order       -2.345811576101292
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            8         56.57μs  true 4.407e-10                     Non-binding       -2.345811576101292
+Optim, ConjugateGradient         25         19.03μs  true 7.152e-08        GradientNorm Non-binding       -2.345811576101286
+Optim, LBFGS                     25         11.63μs  true 2.191e-09        GradientNorm Non-binding      -2.3458115761012914
+Speedmapping, acx                18          1.14μs  true 7.268e-09         first_order Non-binding       -2.345811576101292
 
 MISRA1ALS: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      409      197.64μs  true 1.166e-08        GradientNorm      0.12455138894439205
-Optim, LBFGS                  254      131.88μs  true 1.520e-08        GradientNorm      0.12455138894441055
-Speedmapping, acx         1000001   112816.10μs false 6.669e-02            max_eval       19.514350123023213
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           25         58.66μs false 6.668e-02                     Non-binding       19.515934144011414
+Optim, ConjugateGradient        396        207.57μs  true 7.716e-08        GradientNorm Non-binding      0.12455138894440401
+Optim, LBFGS                    260        119.91μs  true 7.697e-08        GradientNorm Non-binding      0.12455138894439793
+Speedmapping, acx            100000       9443.52μs false 6.668e-02            max_eval Non-binding       19.515847902427694
 
 Six-hump camel: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       25       19.18μs  true 2.021e-08        GradientNorm      -1.0316284534898774
-Optim, LBFGS                   77       30.28μs  true 1.048e-09        GradientNorm      -1.0316284534898774
-Speedmapping, acx              21        1.23μs  true 6.448e-08         first_order     -0.21546382438371714
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           14         71.44μs  true 1.032e-08                     Non-binding      -1.0316284534898774
+Optim, ConjugateGradient         15         16.10μs  true 5.861e-08        GradientNorm Non-binding       -1.031628453489877
+Optim, LBFGS                     31         14.39μs  true 7.921e-10        GradientNorm Non-binding      -1.0316284534898774
+Speedmapping, acx                26          1.37μs  true 4.941e-10         first_order Non-binding      -1.0316284534898772
 
 Himmelblau: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       19       15.53μs  true 6.000e-08        GradientNorm    6.295138727997497e-17
-Optim, LBFGS                   28       12.92μs  true 2.902e-08        GradientNorm   1.2304604871714436e-17
-Speedmapping, acx              18        1.28μs  true 8.851e-08         first_order   1.7844827490094893e-16
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            7         53.72μs  true 2.678e-09                     Binding (1)        6.566362580202338
+Optim, ConjugateGradient     100175      39236.07μs false 2.390e+01      Fevals > limit Non-binding       6.5663822795360725
+Optim, LBFGS                 100125      36538.84μs false 2.390e+01      Fevals > limit Non-binding       6.5663757131542795
+Speedmapping, acx                31          1.64μs  true 2.792e-09         first_order Binding (1)        6.566362580202338
 
 ROSENBR: 2 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      135       74.09μs  true 4.440e-10        GradientNorm     8.74002190227853e-20
-Optim, LBFGS                  152       62.72μs  true 3.036e-10        GradientNorm    9.239124785605442e-20
-Speedmapping, acx              57        2.83μs  true 2.054e-08         first_order    6.598156704218504e-16
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           14         71.68μs  true 0.000e+00                     Binding (1)       2.8899999999999997
+Optim, ConjugateGradient        202        106.44μs  true 4.186e-09        GradientNorm Binding (1)          2.8900000000759
+Optim, LBFGS                    130         70.69μs  true 8.054e-11        GradientNorm Binding (1)       2.8900000000759003
+Speedmapping, acx                15          1.06μs  true 1.140e-11         first_order Binding (1)       2.8899999999999997
 
 Fletcher-Powell: 3 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      195      163.31μs  true 9.874e-09        GradientNorm   1.3588906704111662e-18
-Optim, LBFGS                   99       42.54μs  true 2.916e-08        GradientNorm     3.72036444113153e-18
-Speedmapping, acx              58        3.84μs  true 1.496e-09         first_order    5.594732668231458e-21
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            4         43.07μs  true 0.000e+00                     Binding (3)       1065.0786437626905
+Optim, ConjugateGradient         38      90346.84μs false 7.835e+02          Iterations Binding (1)         1538.47196260091
+Optim, LBFGS                      0      57107.21μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx                 4          0.56μs  true 0.000e+00         first_order Binding (3)       1065.0786437626905
 
 Perm 2: 4 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     1101      989.61μs  true 5.767e-08        GradientNorm    8.106750818101178e-15
-Optim, LBFGS                  247      165.07μs  true 1.048e-08        GradientNorm    5.498234239891996e-16
-Speedmapping, acx             146       27.19μs  true 8.282e-08         first_order     0.010883889811629459
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            2         42.94μs  true 0.000e+00                     Binding (4)       2954.4095775555993
+Optim, ConjugateGradient        105        103.40μs  true 0.000e+00        GradientNorm Binding (4)       2954.4096017523198
+Optim, LBFGS                    142        109.56μs  true 0.000e+00        GradientNorm Binding (4)       2954.4096017523198
+Speedmapping, acx               103         14.43μs  true 0.000e+00         first_order Binding (4)       2954.4095775555993
 
 Powell: 4 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     1152      818.42μs  true 8.893e-08        GradientNorm   2.1557456924686847e-11
-Optim, LBFGS                  202       90.98μs  true 1.439e-08        GradientNorm   1.0370396990723693e-12
-Speedmapping, acx             344       17.23μs  true 9.136e-08         first_order    6.054404654446226e-11
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           16         93.56μs  true 3.031e-09                     Binding (1)        16.60283817426926
+Optim, ConjugateGradient         38      96385.72μs false 8.087e+01          Iterations Binding (1)        35.98654008187128
+Optim, LBFGS                      0      53663.02μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx                39          2.30μs  true 7.781e-09         first_order Binding (1)       16.602838174269262
 
 PALMER5D: 4 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       50 98555422.90μs false 2.280e+02          Iterations        8401.013802882682
-Optim, LBFGS                   87       46.43μs  true 2.421e-09        GradientNorm        87.33939952784851
-Speedmapping, acx              92       10.55μs  true 1.664e-10         first_order        87.33939952784914
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     148755.07μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient          0      55345.06μs false       NaN                 AssertionError                       NaN
+Optim, LBFGS                    226        153.08μs  true 0.000e+00        GradientNorm Binding (4)       20842.640588235965
+Speedmapping, acx               103          7.55μs  true 0.000e+00         first_order Binding (4)       20842.640586552014
 
 LANCZOS2LS: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1115264103741072.18μs false 7.953e-07           Timed out      0.12688480173872244
-Optim, LBFGS              3078832  2484471.08μs false 2.680e-02      NotImplemented      0.01264191253434643
-Speedmapping, acx             778      276.21μs  true 3.694e-08         first_order     0.006916338261787107
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          124        681.78μs  true 2.976e-08                     Non-binding    3.6093925243379834e-9
+Optim, ConjugateGradient         69     106338.12μs false 1.219e+01          Iterations Binding (1)       39.269941246059645
+Optim, LBFGS                 100192      96652.03μs false 1.592e+22      Fevals > limit Non-binding     0.014627758863282447
+Speedmapping, acx              1650        548.69μs  true 7.175e-08         first_order Non-binding     4.560242392550631e-9
 
 PALMER5C: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       82103302942.04μs false 7.655e-01           Timed out       2.3292843870116218
-Optim, LBFGS                  161      107.64μs  true 8.375e-10        GradientNorm        2.251875793994389
-Speedmapping, acx              31        4.48μs  true 1.750e-08         first_order         2.25187579329817
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     117350.10μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         40     105205.43μs false 4.943e+02          Iterations Binding (1)       24722.808992271785
+Optim, LBFGS                 101121      35301.92μs false 1.649e-07      Fevals > limit Binding (4)        18693.74315180639
+Speedmapping, acx                18          2.64μs  true 2.387e-10         first_order Binding (4)       18693.743151806393
 
 LANCZOS1LS: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1079671106691106.08μs false 1.773e-05           Timed out       0.1268618260562242
-Optim, LBFGS              3006236  2598122.12μs false 2.680e-02      NotImplemented     0.012619374861372214
-Speedmapping, acx            1007      366.80μs  true 2.768e-10         first_order     0.006916594192213219
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          120        652.58μs  true 4.575e-08                     Non-binding    3.3612519818593638e-9
+Optim, ConjugateGradient         66     111356.11μs false 1.316e+01          Iterations Binding (1)        43.46135908647855
+Optim, LBFGS                 100001      97802.16μs false 2.178e+16      Fevals > limit Non-binding      0.01482964212542771
+Speedmapping, acx              3190       1066.65μs  true 2.976e-08         first_order Non-binding    3.6388288178459535e-9
 
 LANCZOS3LS: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1003209  1059319.02μs false 5.404e-09        GradientNorm       0.1268756219345674
-Optim, LBFGS              3005166  2457027.91μs false 2.680e-02      NotImplemented      0.01263949470016134
-Speedmapping, acx            1143      418.83μs  true 4.581e-09         first_order     0.006912985164403775
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          125        669.65μs  true 2.751e-08                     Non-binding    1.7985960409766386e-8
+Optim, ConjugateGradient         81     107379.22μs false 2.191e+01          Iterations Binding (1)         28.9093161316659
+Optim, LBFGS                 100001      80912.11μs false 5.878e+17      Fevals > limit Non-binding     0.014767757748946666
+Speedmapping, acx              1564        535.69μs  true 9.782e-08         first_order Non-binding     2.028150767924237e-8
 
 BIGGS6: 6 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1009784   847270.97μs false 6.369e-08        GradientNorm    3.2331748972571936e-5
-Optim, LBFGS              1007227   680983.78μs false 3.933e+01      NotImplemented     5.427587896000423e-5
-Speedmapping, acx             476      108.65μs  true 9.643e-09         first_order     0.005655649925503534
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           22        134.12μs  true 3.000e-08                     Binding (3)      0.26207727502009803
+Optim, ConjugateGradient        125     115551.07μs false 4.598e-02          Iterations Binding (2)      0.26251293614253374
+Optim, LBFGS                    361        278.50μs  true 2.354e-12        GradientNorm Binding (3)       0.2620772750213176
+Speedmapping, acx                42          9.93μs  true 1.996e-10         first_order Binding (3)       0.2620772750200983
 
 THURBERLS: 7 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   986595 55889311.71μs false 2.144e+01          Iterations        593200.8031492977
-Optim, LBFGS                  187      116.81μs false 1.913e+04        GradientNorm         328680.388495147
-Speedmapping, acx            2767      269.81μs  true 1.499e-08         first_order      3.415139027824454e7
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          106        516.86μs false 3.425e-03                     Binding (2)        863971.4796332164
+Optim, ConjugateGradient     200020     259964.94μs false 1.368e+10      Fevals > limit Non-binding        977417.8496138378
+Optim, LBFGS                    178        120.56μs false 5.944e+03        GradientNorm Non-binding        836682.1586928166
+Speedmapping, acx              2540        221.08μs  true 3.694e-08         first_order Non-binding      3.415935058766809e7
 
 HAHN1LS: 7 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       57      141.17μs  true 7.188e-14        GradientNorm        48580.65444216646
-Optim, LBFGS                   54       75.74μs false 8.066e+05        GradientNorm      7.484020583837941e7
-Speedmapping, acx               4        2.54μs  true 8.266e-13         first_order        55509.88868224071
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         1703       8250.70μs false 2.422e+06                     Non-binding        7.843564997696817
+Optim, ConjugateGradient         72        141.14μs  true 1.678e-13        GradientNorm Non-binding        49036.25159562894
+Optim, LBFGS                     73         86.18μs false 1.659e+07        GradientNorm Non-binding         52924.2189663368
+Speedmapping, acx               625        135.35μs  true 8.119e-08         first_order Non-binding       55350.766351989754
 
 PALMER1D: 7 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     2852107803696.87μs false 8.620e+02           Timed out        512.8367731844031
-Optim, LBFGS                  343      244.74μs  true 3.496e-12        GradientNorm        482.2790217404504
-Speedmapping, acx             146       24.08μs  true 8.941e-08         first_order       482.27902168032426
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     119497.06μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient     163379     117610.93μs false 5.673e+04      Fevals > limit Binding (1)       37924.005023632075
+Optim, LBFGS                 102892      49073.93μs false 3.342e+03      Fevals > limit Binding (4)       37873.637641005844
+Speedmapping, acx             16149       2412.42μs  true 9.663e-08         first_order Binding (4)        37871.93324826802
 
 GAUSS2LS: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  2008805 29805531.02μs false 4.058e-08        GradientNorm       1247.5282092309988
-Optim, LBFGS                  223     1988.30μs  true 7.204e-09        GradientNorm       1247.5282092309988
-Speedmapping, acx         1000001  3575538.87μs false 1.389e-04            max_eval       1247.5282092320424
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          132       1656.98μs false 3.033e-03                     Binding (6)        6715.834802895376
+Optim, ConjugateGradient      80255    1276399.11μs false 7.548e-03          Iterations Binding (6)        6715.834802895754
+Optim, LBFGS                      0     947681.90μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx            100000     353469.54μs false 1.512e-05            max_eval Binding (6)        6715.834802895378
 
 PALMER6C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    60880    57304.86μs  true 3.510e-09        GradientNorm       0.3614203110060443
-Optim, LBFGS                  473      304.67μs  true 1.810e-10        GradientNorm      0.36142031100603766
-Speedmapping, acx           24396     3289.54μs  true 8.330e-08         first_order      0.36142030973961137
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     113458.16μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient       3996     118320.67μs false 2.641e+00          Iterations Binding (1)       172.73468769290218
+Optim, LBFGS                   7326       3792.94μs  true 2.847e-09        GradientNorm Binding (5)       172.35915721618892
+Speedmapping, acx               236         30.64μs  true 3.585e-08         first_order Binding (5)        172.3591572156609
 
 PALMER2C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    89196    72191.43μs  true 2.065e-10        GradientNorm       0.7813499006532737
-Optim, LBFGS                  532      354.73μs  true 1.066e-11        GradientNorm       0.7813499006533251
-Speedmapping, acx            6194      918.03μs  true 5.879e-08         first_order       0.7813499006120755
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     110080.00μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient      21677     140803.85μs false 2.244e+02          Iterations Binding (1)       1230.3374476261508
+Optim, LBFGS                   9676       5402.56μs  true 4.121e-09        GradientNorm Binding (4)        1222.490615242839
+Speedmapping, acx            100001      12831.93μs false 2.496e-05      Fevals > limit Binding (4)        1222.490615230047
 
 PALMER1C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    44383105924993.04μs false 1.395e+02           Timed out       16.171269999926682
-Optim, LBFGS                 1190      763.68μs  true 1.587e-10        GradientNorm       15.829657150677605
-Speedmapping, acx          732186   115018.24μs  true 9.976e-08         first_order       15.829657150153416
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     119463.92μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient      56815     163159.30μs false 4.341e+01          Iterations Binding (2)        37847.85348717804
+Optim, LBFGS                 102788      45243.98μs false 3.283e+04      Fevals > limit Binding (2)        37849.73544483939
+Speedmapping, acx            100000      14245.18μs false 2.839e-02            max_eval Binding (4)       37847.828164026796
 
 PALMER4C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    45919    39183.22μs  true 2.848e-09        GradientNorm       1.3343295743866512
-Optim, LBFGS                  465      302.62μs  true 2.735e-09        GradientNorm       1.3343295743866674
-Speedmapping, acx            5343      794.15μs  true 5.128e-08         first_order       1.3343295617239084
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     114316.94μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient       9049     119427.79μs false 8.232e+01          Iterations Binding (1)       202.53192263996823
+Optim, LBFGS                 100820      53142.07μs false 4.008e+00      Fevals > limit Binding (5)       199.69552869517176
+Speedmapping, acx               416         58.37μs  true 6.611e-08         first_order Binding (5)       199.69369803679118
 
 PALMER3C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    51181    44648.30μs  true 9.533e-11        GradientNorm       0.6776698678449562
-Optim, LBFGS                  500      322.97μs  true 3.252e-09        GradientNorm       0.6776698805167726
-Speedmapping, acx            7684     1136.97μs  true 9.799e-08         first_order       0.6776698678325404
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     118958.00μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient      55295     172797.66μs false 7.539e-06          Iterations Binding (4)       217.26371118170908
+Optim, LBFGS                 103516      45333.15μs false 2.674e+02      Fevals > limit Binding (4)        217.2767474079502
+Speedmapping, acx             86641      11574.70μs  true 8.055e-08         first_order Binding (4)        217.2637111817049
 
 VIBRBEAM: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    25224111343076.94μs false 3.635e+05           Timed out       19.502570742676532
-Optim, LBFGS               203930   348460.49μs false 1.926e-05      NotImplemented       3.3069024254501365
-Speedmapping, acx         1000000   479312.34μs false 8.612e+01            max_eval        24.25534075035414
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          420       1998.86μs false 1.190e-02                     Non-binding      0.15644608774809152
+Optim, ConjugateGradient     200023     321507.93μs false 1.231e+08      Fevals > limit Non-binding       19123.175496660853
+Optim, LBFGS                   2372       3178.90μs  true 7.957e-08        GradientNorm Non-binding        7.590116364524644
+Speedmapping, acx            100000      51472.14μs false 9.591e+01            max_eval Non-binding        36.29302592790894
 
 PALMER8C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    40652108658743.14μs false 4.394e+00           Timed out       2.0089565564598195
-Optim, LBFGS                  505      313.30μs  true 1.600e-10        GradientNorm       2.0080260185626626
-Speedmapping, acx            2812      371.98μs  true 2.905e-08         first_order         2.00802601711683
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     120801.93μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient       3670       2493.75μs  true 1.222e-09        GradientNorm Binding (6)       115.48202650788595
+Optim, LBFGS                 100991      37918.09μs false 9.757e-01      Fevals > limit Binding (6)        115.4837762797095
+Speedmapping, acx                69          9.31μs  true 2.688e-09         first_order Binding (6)       115.48202650716308
 
 GAUSS3LS: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1216068 12207765.82μs false 5.677e-08        GradientNorm       1244.4846360131562
-Optim, LBFGS                  233     2137.49μs  true 9.616e-08        GradientNorm        1244.484636013157
-Speedmapping, acx             210      821.02μs  true 5.336e-08         first_order       61551.299321299804
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          146       1816.63μs false 3.334e-02                     Binding (3)        7644.736622856321
+Optim, ConjugateGradient      97251    1424804.79μs false 4.636e-01          Iterations Binding (3)        7644.736622856429
+Optim, LBFGS                 105840     919105.05μs false 9.227e+04      Fevals > limit Binding (3)        7645.582651298191
+Speedmapping, acx            100001     354323.86μs false 1.058e-03      Fevals > limit Binding (3)        7644.736622875823
 
 PALMER7C: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    30351105415344.95μs false 6.901e+00           Timed out       10.573093917913937
-Optim, LBFGS                  526      331.59μs  true 4.637e-10        GradientNorm        10.57204124399613
-Speedmapping, acx           11083     1584.97μs  true 9.951e-08         first_order       10.572041238835329
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     114319.80μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient          0      87222.81μs false       NaN                 AssertionError                       NaN
+Optim, LBFGS                 101011      51620.96μs false 2.281e+00      Fevals > limit Binding (6)       170.32892185912672
+Speedmapping, acx                31          4.80μs  true 2.618e-09         first_order Binding (6)        170.3263489948777
 
 GAUSS1LS: 8 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1169835 18467740.77μs false 9.483e-08        GradientNorm        1315.822243203378
-Optim, LBFGS                  218     1975.59μs  true 2.119e-08        GradientNorm       1315.8222432033767
-Speedmapping, acx             516     1987.92μs  true 3.460e-08         first_order        52889.24861821918
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           86        960.59μs false 3.365e-06                     Binding (6)        5066.896864959217
+Optim, ConjugateGradient     100042    1347879.17μs false 6.341e-01      Fevals > limit Binding (6)       5066.8968650233055
+Optim, LBFGS                 102393     953850.98μs false 9.008e+01      Fevals > limit Binding (6)        5067.094534061257
+Speedmapping, acx            100001     346323.97μs false 2.078e-04      Fevals > limit Binding (6)        5066.896864959842
 
 STRTCHDV: 10 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     1106     2305.43μs  true 6.492e-08        GradientNorm   1.8908477884616686e-11
-Optim, LBFGS                  975     1216.36μs  true 9.962e-08        GradientNorm    8.654884884877692e-11
-Speedmapping, acx             981      461.19μs  true 8.987e-08         first_order       1.6966192150434525
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           31        231.80μs  true 8.099e-08                     Non-binding    3.913082390558157e-11
+Optim, ConjugateGradient        166        359.63μs  true 5.785e-08        GradientNorm Non-binding    7.333164295041699e-11
+Optim, LBFGS                    483        608.32μs  true 7.613e-08        GradientNorm Non-binding    3.279612699924784e-11
+Speedmapping, acx               276        126.84μs  true 4.896e-08         first_order Binding (1)      0.10566696638598741
 
 HILBERTB: 10 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       15       23.54μs  true 1.709e-08        GradientNorm     8.83074507966866e-17
-Optim, LBFGS                   31       24.82μs  true 1.770e-08        GradientNorm     7.01787669880342e-17
-Speedmapping, acx               8        1.61μs  true 6.584e-08         first_order    9.242278604553933e-16
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            3         47.20μs  true 0.000e+00                    Binding (10)        354.2982126984642
+Optim, ConjugateGradient         38     136711.57μs false 3.047e+01          Iterations Binding (1)        370.9622301157076
+Optim, LBFGS                      0      74693.92μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx               103          8.96μs  true 0.000e+00        first_order Binding (10)        354.2982126984642
 
 TRIGON1: 10 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       73      113.80μs  true 3.792e-08        GradientNorm    4.530755850023387e-16
-Optim, LBFGS                  113      102.63μs  true 9.501e-08        GradientNorm    8.176381843902098e-17
-Speedmapping, acx             120       22.95μs  true 7.368e-08         first_order   4.6836831973272524e-17
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     113399.03μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient        103        156.70μs  true 2.223e-08        GradientNorm Non-binding   1.2517526782176597e-17
+Optim, LBFGS                    113        104.89μs  true 6.732e-08        GradientNorm Non-binding    4.015279841164168e-17
+Speedmapping, acx               120         23.08μs  true 7.374e-08         first_order Non-binding    4.684158834218382e-17
 
 TOINTQOR: 50 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       70100000150.92μs false 2.261e+01           Timed out       1484.0904255354374
-Optim, LBFGS                 1171     1436.45μs  true 3.091e-09        GradientNorm       1222.5124149971011
-Speedmapping, acx              63       15.61μs  true 1.120e-08         first_order       1222.5124149967762
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     109176.16μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         42     262109.09μs false 4.367e+01          Iterations Binding (1)       1966.2689502884173
+Optim, LBFGS                   2438       3237.84μs  true 4.297e-10       GradientNorm Binding (26)       1431.2275561544468
+Speedmapping, acx                47         10.44μs  true 4.920e-08        first_order Binding (26)       1431.2275561541453
 
 CHNROSNB: 50 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      652     1258.88μs  true 9.466e-08        GradientNorm    8.708393871544616e-16
-Optim, LBFGS                 1257     1572.30μs  true 5.797e-08        GradientNorm   5.2590559813442906e-17
-Speedmapping, acx            1044      192.69μs  true 6.242e-08         first_order    6.525687738878384e-15
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            3         46.78μs false 2.200e+02                    Binding (49)                1218.9775
+Optim, ConjugateGradient         43     251522.93μs false 3.817e+02          Iterations Binding (1)       3903.4808777226726
+Optim, LBFGS                      0     122744.08μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx               103         12.66μs  true 0.000e+00        first_order Binding (50)                1156.4775
 
 DECONVU: 63 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  2007045  7641974.93μs false 8.849e-08        GradientNorm    3.229621300971975e-10
-Optim, LBFGS              3081619  6524567.13μs false 9.260e-08        GradientNorm     3.626401807560488e-8
-Speedmapping, acx           23974    13865.07μs  true 9.962e-08         first_order    1.5203465201255886e-9
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         9650     106932.30μs  true 9.533e-08                    Binding (14)     0.009550386405618996
+Optim, ConjugateGradient         44     305528.15μs false 1.550e+01          Iterations Binding (1)       49.112697562616106
+Optim, LBFGS                 200023     313158.04μs false 8.407e-01      Fevals > limit Non-binding      0.02293862833355709
+Speedmapping, acx            100002      58539.15μs false 3.053e-05     Fevals > limit Binding (13)     0.009679022809227429
 
 LUKSAN13LS: 98 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      686     1918.53μs  true 3.479e-08        GradientNorm        25188.85958964517
-Optim, LBFGS                  719     1686.38μs  true 5.611e-08        GradientNorm        25188.85958964516
-Speedmapping, acx             220      110.23μs  true 8.079e-08         first_order        25188.85958964517
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           14        110.97μs  true 1.058e-10                    Binding (97)        40940.60127510612
+Optim, ConjugateGradient         45     460547.15μs false 3.490e+02          Iterations Binding (1)        43696.12621110176
+Optim, LBFGS                    739       1487.56μs  true 2.464e-09       GradientNorm Binding (97)       40940.601275145214
+Speedmapping, acx                23         12.56μs  true 5.329e-15        first_order Binding (97)        40940.60127510612
 
 QING: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      116      400.66μs false 1.413e-07      NotImplemented   2.7697537449374897e-16
-Optim, LBFGS                  403      876.94μs  true 7.826e-08        GradientNorm    6.263218495370169e-16
-Speedmapping, acx             107       44.48μs  true 3.441e-08         first_order    5.542564009954536e-18
-
-Paraboloid Random Matrix: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1488360  9520399.81μs false 6.916e-08        GradientNorm   2.6705868928450904e-15
-Optim, LBFGS                15519    49754.04μs  true 9.127e-08        GradientNorm   2.6560987611748424e-15
-Speedmapping, acx             210      202.13μs  true 8.770e-08         first_order    2.464496633437794e-14
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            9        221.78μs  true 1.437e-10                    Binding (98)               316129.625
+Optim, ConjugateGradient         27     438781.68μs false 5.788e+02          Iterations Binding (1)        320508.4025457767
+Optim, LBFGS                      0     219715.83μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx                23          9.12μs  true 5.426e-13        first_order Binding (98)               316129.625
 
 Extended Powell: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     1503100006512.88μs false 4.710e-01           Timed out       0.8082713825776985
-Optim, LBFGS                 7587    15993.45μs  true 1.545e-09        GradientNorm   2.9473378386853145e-12
-Speedmapping, acx             636      189.45μs  true 9.480e-08         first_order     1.285845900495708e-9
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          547       5747.35μs false 4.985e-07                    Binding (20)       103.58609558626107
+Optim, ConjugateGradient         64     468746.82μs false 1.331e+02          Iterations Binding (5)       1804.3064041267485
+Optim, LBFGS                 109048     179409.03μs false 3.993e-01     Fevals > limit Binding (20)       103.60155467347558
+Speedmapping, acx               884        276.51μs  true 9.774e-08        first_order Binding (20)       103.58609558642691
 
 Trigonometric: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       83      511.91μs  true 7.362e-08        GradientNorm     9.204814830230329e-7
-Optim, LBFGS                  214      737.52μs  true 8.856e-08        GradientNorm     9.204814956309874e-7
-Speedmapping, acx             114      170.35μs  true 4.389e-08         first_order    1.2026987126958284e-6
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     147006.03μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         89        619.75μs  true 6.767e-08        GradientNorm Non-binding     9.204814699941642e-7
+Optim, LBFGS                    206        756.58μs  true 7.100e-08        GradientNorm Non-binding     9.204814629711125e-7
+Speedmapping, acx               119        175.35μs  true 1.969e-08         first_order Non-binding     1.202698700231473e-6
 
 Dixon and Price: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      269      968.17μs  true 6.780e-08        GradientNorm    5.475112319884422e-16
-Optim, LBFGS                  882     1967.35μs  true 9.502e-08        GradientNorm    1.456280815492514e-16
-Speedmapping, acx             276      117.72μs  true 7.821e-08         first_order   1.2094910421344376e-15
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         1600     195255.71μs  true 7.781e-08                     Non-binding       0.6666666666666672
+Optim, ConjugateGradient        569       2200.11μs  true 7.611e-08        GradientNorm Non-binding   1.4454005697687317e-16
+Optim, LBFGS                   2719       6171.25μs  true 8.189e-08        GradientNorm Non-binding        0.666666666666672
+Speedmapping, acx               311        114.29μs  true 9.065e-08         first_order Non-binding   4.1028176218331614e-16
 
 Paraboloid Diagonal: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient 49000100101893015.15μs false 3.445e+00           Timed out        785.2281469167763
-Optim, LBFGS               196355   361863.52μs  true 4.970e-08        GradientNorm   1.2525714758066394e-15
-Speedmapping, acx             223      114.93μs  true 6.989e-08         first_order    6.622145287736198e-16
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     111682.18μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient      28008     496162.45μs false 3.001e+02          Iterations Binding (1)        22899.54294738802
+Optim, LBFGS                      0     185173.03μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx               103         23.24μs  true 0.000e+00       first_order Binding (100)                22720.625
 
 LUKSAN17LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1000061107024383.07μs false 1.161e+04           Timed out       46154.727417217866
-Optim, LBFGS              7802503 45559359.07μs false 1.660e-05      NotImplemented        46099.01255604742
-Speedmapping, acx            4436    12032.97μs  true 9.490e-08         first_order         46098.9894332973
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          349       5093.27μs false 5.476e-07                     Non-binding       0.4931612903225823
+Optim, ConjugateGradient     103018     809730.05μs false 7.663e-02      Fevals > limit Non-binding       0.4931924017309112
+Optim, LBFGS                   8652      58554.99μs  true 9.764e-08        GradientNorm Non-binding      0.49316129032258305
+Speedmapping, acx               826       2345.50μs  true 5.469e-08         first_order Non-binding       0.4931612903225869
 
 LUKSAN11LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      996     4254.41μs  true 5.079e-08        GradientNorm   3.9703653447328243e-16
-Optim, LBFGS                 6711    14931.74μs  true 1.583e-08        GradientNorm   3.1010903109285467e-17
-Speedmapping, acx            8359     2916.64μs  true 5.195e-12         first_order    6.746314117695596e-24
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           88        409.89μs false 3.993e+01                     Binding (1)        391.3713786179732
+Optim, ConjugateGradient     100740     183311.94μs false 1.329e+01      Fevals > limit Non-binding         387.387099887469
+Optim, LBFGS                      0     189541.10μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx                47         16.01μs  true 3.834e-08         first_order Binding (1)         387.381676508541
 
 Quadratic Diagonal: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       75      361.58μs  true 7.667e-08        GradientNorm    9.123465444869238e-16
-Optim, LBFGS                  250      608.82μs false 1.034e-07      NotImplemented    5.310547428603952e-15
-Speedmapping, acx             124       65.16μs  true 4.535e-08         first_order    5.500812608566012e-16
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     108763.93μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         50     425831.76μs false 5.030e+01          Iterations Binding (1)       1139.2593855194255
+Optim, LBFGS                 100371     194765.09μs false 5.000e+01      Fevals > limit Binding (1)        631.2541840888878
+Speedmapping, acx               103         22.39μs  true 0.000e+00       first_order Binding (100)                   631.25
 
 LUKSAN21LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       73100000180.01μs false 4.701e-01           Timed out         97.7653781391842
-Optim, LBFGS                14834    38479.77μs  true 1.690e-10        GradientNorm       60.408062593495195
-Speedmapping, acx            4167     2041.67μs  true 9.782e-08         first_order       60.408062593528264
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           43         66.99μs false 2.831e+00                     Non-binding        99.95203696384378
+Optim, ConjugateGradient         73     425256.34μs false 2.486e-01          Iterations Non-binding        96.37347117946817
+Optim, LBFGS                   6396      18969.99μs  true 6.811e-08        GradientNorm Non-binding   1.3269939322510062e-13
+Speedmapping, acx              2111       1026.07μs  true 9.613e-08         first_order Non-binding    2.190132492584259e-12
 
 LUKSAN16LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     7742    73229.92μs  true 6.268e-08        GradientNorm        3.569697051173905
-Optim, LBFGS                25276   207108.19μs  true 9.629e-08        GradientNorm        3.569697051173896
-Speedmapping, acx              39      185.45μs  true 5.351e-08         first_order       3.5696970511738924
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           89       1014.33μs false 2.720e-07                     Non-binding        3.569697051173897
+Optim, ConjugateGradient       1311      12926.56μs  true 4.635e-08        GradientNorm Non-binding          3.5696970511739
+Optim, LBFGS                   2030      17320.62μs  true 4.875e-09        GradientNorm Non-binding        3.569697051173893
+Speedmapping, acx                39        180.91μs  true 5.350e-08         first_order Non-binding        3.569697051173897
 
 LUKSAN15LS: 100 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  2002029 59261101.96μs false 8.753e-08        GradientNorm       3.5696970511739012
-Optim, LBFGS              2006155 45985700.85μs false 9.739e-08        GradientNorm        3.569697051173901
-Speedmapping, acx              40      638.99μs  true 3.129e-08         first_order        3.569697051173899
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           71       1936.47μs false 1.981e-06                     Non-binding       3.5696970511738964
+Optim, ConjugateGradient     100001    3813766.96μs false 7.572e+01      Fevals > limit Non-binding        3.573309476166831
+Optim, LBFGS                 100059    2860501.05μs false 3.514e+07      Fevals > limit Non-binding        4.286832066343399
+Speedmapping, acx                40        637.02μs  true 3.129e-08         first_order Non-binding          3.5696970511739
 
 VARDIM: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1000001  3234581.95μs false 6.830e+06      NotImplemented     9.401312700728958e13
-Optim, LBFGS                 9946    41327.44μs  true 1.713e-09        GradientNorm    5.969249489915649e-18
-Speedmapping, acx             108       90.04μs  true 3.800e-08         first_order    1.992476695730292e-15
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            7        114.77μs  true 0.000e+00                   Binding (200)    1.3105836968930898e14
+Optim, ConjugateGradient     200002     889158.96μs false 4.251e+13      Fevals > limit Non-binding     1.998018722639582e14
+Optim, LBFGS                 100070     390053.03μs false 4.461e+13      Fevals > limit Non-binding    2.1303490310653138e14
+Speedmapping, acx               103         57.18μs  true 0.000e+00       first_order Binding (200)    1.3105836968930898e14
 
 BROWNAL: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    17925   125716.04μs  true 7.670e-08        GradientNorm   1.4426909875262811e-12
-Optim, LBFGS                  245      742.19μs  true 5.409e-08        GradientNorm    7.344266756739795e-13
-Speedmapping, acx         1000002   592557.19μs false 1.016e-06            max_eval    1.0965038436458557e-9
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            3         56.13μs false 1.990e+02                   Binding (199)                    49.75
+Optim, ConjugateGradient         75        501.89μs  true 0.000e+00      GradientNorm Binding (200)     2.01325103797075e-12
+Optim, LBFGS                     64        330.60μs  true 0.000e+00      GradientNorm Binding (200)   2.0101019665229743e-12
+Speedmapping, acx               103         44.04μs  true 0.000e+00         first_order Non-binding                      0.0
 
 ARGLINB: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      124100000149.97μs false 1.842e+11           Timed out             9.90179315e9
-Optim, LBFGS                  473     1326.66μs false 2.741e+11      NotImplemented            2.19221892e10
-Speedmapping, acx              20       27.12μs  true 1.133e-08         first_order          99.625468164794
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            6         90.64μs false 3.556e-04                     Non-binding          99.625468164794
+Optim, ConjugateGradient          0     577487.95μs false       NaN                 AssertionError                       NaN
+Optim, LBFGS                   2900      14441.79μs false 9.223e-04      NotImplemented Non-binding          99.625468164794
+Speedmapping, acx            100001      84265.95μs false 4.736e-04      Fevals > limit Non-binding          99.625468164794
 
 ARGLINA: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       89      484.29μs  true 3.315e-09        GradientNorm       300.00000079999995
-Optim, LBFGS                   54      253.65μs  true 1.050e-11        GradientNorm        300.0000008000002
-Speedmapping, acx              10        9.63μs  true 0.000e+00         first_order                    300.0
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     108929.87μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         15        157.25μs  true 8.000e-10        GradientNorm Non-binding       199.99999999999997
+Optim, LBFGS                     18        131.27μs  true 8.000e-10        GradientNorm Non-binding       199.99999999999997
+Speedmapping, acx                 4          5.48μs  true 0.000e+00         first_order Non-binding                    200.0
 
 PENALTY2: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    64715   353407.88μs  true 8.654e-08        GradientNorm     4.711627727546475e13
-Optim, LBFGS                 3131    19108.12μs  true 7.981e-08        GradientNorm     4.711627727546475e13
-Speedmapping, acx             324      427.16μs  true 7.119e-08         first_order     4.711627727546475e13
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           28        505.48μs false 1.822e+03                     Binding (7)     4.711627729677791e13
+Optim, ConjugateGradient       2915     775361.92μs false 1.798e+03          Iterations Binding (3)    4.7116277295873125e13
+Optim, LBFGS                  13293      73199.51μs false 3.882e-06      NotImplemented Binding (8)      4.71162772958727e13
+Speedmapping, acx                92        134.61μs  true 6.638e-10         first_order Binding (8)      4.71162772958727e13
 
 ARGTRIGLS: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     2820    23679.06μs  true 8.963e-08        GradientNorm     1.53835291467698e-16
-Optim, LBFGS                 3672    25329.32μs  true 8.547e-08        GradientNorm   5.2392882763078725e-17
-Speedmapping, acx            2620     4981.38μs  true 9.452e-08         first_order   2.4284270929110605e-17
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         1174      27321.35μs  true 9.847e-08                     Non-binding   1.6662241032374368e-16
+Optim, ConjugateGradient       5592      56976.94μs  true 9.598e-08        GradientNorm Non-binding   2.1408404387096865e-16
+Optim, LBFGS                   7918      61338.89μs  true 9.968e-08        GradientNorm Non-binding   1.8903997762693878e-16
+Speedmapping, acx              1914       3771.69μs  true 7.871e-08         first_order Non-binding    8.358151997065141e-17
 
 ARGLINC: 200 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1000021  4266229.87μs false 1.664e+05      NotImplemented       101.13376187991838
-Optim, LBFGS                  999     2544.47μs false 6.265e+09      NotImplemented          1.17467854375e7
-Speedmapping, acx              20       26.82μs  true 8.877e-09         first_order        101.1254705144291
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           45        100.78μs false 2.451e-03                     Non-binding        101.1254705144291
+Optim, ConjugateGradient     200028    1230062.96μs false 1.631e+10      Fevals > limit Non-binding      7.961493340391916e7
+Optim, LBFGS                  16509     140066.86μs false       NaN                 NotImplemented                       NaN
+Speedmapping, acx            100001      83976.03μs false 3.959e-04      Fevals > limit Non-binding       101.12547051442908
 
 PENALTY3: 200 parameters, abstol = 1.0e-7.
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     137739.18μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         59     876180.13μs false 6.623e+05          Iterations Binding (1)      8.413168194526021e8
+Optim, LBFGS                 113893     435284.14μs false 7.969e-01    Fevals > limit Binding (199)      2.567342131971555e6
+Speedmapping, acx                70         72.59μs  true 5.097e-09       first_order Binding (199)      2.567342131970553e6
 
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     9186    55529.22μs  true 2.524e-08        GradientNorm        39857.53556269422
-Optim, LBFGS                16651    76508.12μs  true 3.902e-08        GradientNorm        39857.53556269423
-Speedmapping, acx         1000001  1189699.89μs false 2.381e-06            max_eval       39857.535562694866
-
-Large Polynomial: 250 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       10      177.53μs false 3.953e-03      NotImplemented   0.00024752696261260137
-Optim, LBFGS                   83      294.45μs  true 3.958e-09        GradientNorm   2.4768628694261274e-16
-Speedmapping, acx               4        7.64μs  true 0.000e+00         first_order                      0.0
+Large-Scale Quadratic: 250 parameters, abstol = 1.0e-7.
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            4         51.50μs  true 0.000e+00                   Binding (250)              5.2083125e6
+Optim, ConjugateGradient         23    1067091.73μs false 4.970e+02          Iterations Binding (1)      5.218688088772731e6
+Optim, LBFGS                      0     519834.04μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx               103         67.85μs  true 0.000e+00       first_order Binding (250)              5.2083125e6
 
 OSCIPATH: 500 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   158291  2083607.11μs  true 8.006e-08        GradientNorm       0.9999666655201664
-Optim, LBFGS              1000027  5893643.14μs false 4.066e-08        GradientNorm       0.9999666655201666
-Speedmapping, acx              15       32.86μs  true 1.571e-08         first_order       0.9999666655201663
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           14        261.60μs  true 8.059e-08                     Non-binding       0.9999666655201662
+Optim, ConjugateGradient      92085    1672647.33μs  true 3.573e-08        GradientNorm Non-binding       0.9999666655201664
+Optim, LBFGS                  58950     482453.43μs  true 2.697e-08        GradientNorm Non-binding       0.9999666655201664
+Speedmapping, acx                15         24.73μs  true 1.571e-08         first_order Non-binding       0.9999666655201663
 
 GENROSE: 500 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     1231    20881.79μs  true 7.966e-08        GradientNorm   2.4027274656446136e-16
-Optim, LBFGS                 5182    38871.05μs  true 9.267e-08        GradientNorm    5.867289035138027e-16
-Speedmapping, acx            3524     4798.23μs  true 8.779e-08         first_order   3.1239926741341477e-17
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          779      23682.71μs false 5.319e-03                    Binding (40)         273.151944124752
+Optim, ConjugateGradient         37    1839735.02μs false 1.128e+02          Iterations Non-binding        389.1162415230237
+Optim, LBFGS                 151698    1294243.81μs false 4.457e+00     Fevals > limit Binding (39)        272.6410634554596
+Speedmapping, acx              2061       2690.26μs  true 3.897e-08        first_order Binding (40)       273.15193881705994
 
 INTEQNELS: 502 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       14      390.99μs  true 1.753e-08        GradientNorm    2.206833546245142e-15
-Optim, LBFGS                   29      444.27μs  true 2.335e-08        GradientNorm    8.904609959359295e-15
-Speedmapping, acx              10       39.10μs  true 5.466e-08         first_order    6.002802406277538e-14
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            7        144.23μs  true 2.179e-08                     Non-binding    9.481003229328983e-15
+Optim, ConjugateGradient         15        442.88μs  true 2.162e-08        GradientNorm Non-binding   1.7472926924069516e-14
+Optim, LBFGS                     27        452.51μs  true 7.427e-08        GradientNorm Non-binding   1.3714530480217093e-13
+Speedmapping, acx                10         40.90μs  true 5.466e-08         first_order Non-binding    6.002802406342395e-14
 
 EXTROSNB: 1000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    58754  1135948.68μs  true 7.320e-08        GradientNorm     3.600362157473285e-8
-Optim, LBFGS               362034  5682821.52μs  true 8.687e-08        GradientNorm    6.570661168672569e-13
-Speedmapping, acx         1000000  2959389.44μs false 3.660e-07            max_eval    1.8103875844569495e-7
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            4        110.01μs  true 0.000e+00                  Binding (1000)                  56196.0
+Optim, ConjugateGradient          0    1612959.86μs false       NaN                 AssertionError                       NaN
+Optim, LBFGS                    719      11217.25μs  true 0.000e+00     GradientNorm Binding (1000)        56196.00059940202
+Speedmapping, acx               103        200.92μs  true 0.000e+00      first_order Binding (1000)                  56196.0
 
 PENALTY1: 1000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       62100000349.04μs false 1.165e+12           Timed out     8.494674163785717e16
-Optim, LBFGS             ┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
-┌ Warning: Failed to achieve finite new evaluation point, using alpha=0
-└ @ LineSearches ~/.julia/packages/LineSearches/b4CwT/src/hagerzhang.jl:156
- 2013848 26764140.84μs false 2.531e+04      NotImplemented     8.485088347241957e16
-Speedmapping, acx              18       65.11μs  true 3.612e-15         first_order     8.485088347241954e16
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     111298.08μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient        646      16160.14μs  true 6.123e-08        GradientNorm Non-binding     0.009686175433475214
+Optim, LBFGS                   2709      52637.19μs  true 4.235e-08        GradientNorm Non-binding     0.009686175432902356
+Speedmapping, acx                98        297.28μs  true 2.307e-08         first_order Non-binding     0.009686175495025356
 
 EG2: 1000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      728    17570.52μs  true 1.858e-08        GradientNorm       -998.9473933000194
-Optim, LBFGS                  123     2660.99μs  true 1.080e-09        GradientNorm        -998.947393300942
-Speedmapping, acx              10       95.22μs  true 3.422e-13         first_order       -998.9473933009451
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           45        536.05μs false 1.457e-06                     Non-binding       -998.9473933009804
+Optim, ConjugateGradient        441      13503.57μs  true 8.569e-08        GradientNorm Non-binding       -998.9473932734693
+Optim, LBFGS                     71       2019.90μs  true 9.909e-10        GradientNorm Non-binding        -998.994811152719
+Speedmapping, acx                10         94.40μs  true 3.422e-13         first_order Non-binding       -998.9473933009451
 
 FLETCHCR: 1000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     4551   152915.03μs  true 6.559e-08        GradientNorm     4.48185615433388e-15
-Optim, LBFGS                25579   362399.70μs  true 8.914e-08        GradientNorm    3.531774830762856e-17
-Speedmapping, acx           46028   127475.01μs  true 5.683e-08         first_order    9.484698587935463e-17
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           76        956.47μs false 2.001e-02                     Binding (1)        987.5927193044184
+Optim, ConjugateGradient        557      11189.90μs  true 5.626e-09        GradientNorm Binding (1)        987.5927183041797
+Optim, LBFGS                 100241    1449645.04μs false 7.005e-01      Fevals > limit Binding (1)        987.5966686817297
+Speedmapping, acx                48        126.34μs  true 7.056e-08         first_order Binding (1)        987.5927183031806
 
 MSQRTBLS: 1024 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       48100000453.95μs false 5.847e+01           Timed out       1327.5078793440907
-Optim, LBFGS                24196   692164.26μs  true 9.542e-08        GradientNorm    4.799973668183446e-13
-Speedmapping, acx            6677    72135.82μs  true 9.522e-08         first_order   1.4280765018333657e-10
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     151120.19μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         40    3289745.66μs false 4.776e+01          Iterations Binding (1)        4679.737065381235
+Optim, LBFGS                 102780    3070293.19μs false 3.325e-01    Fevals > limit Binding (285)       129.41457564621334
+Speedmapping, acx               548       5443.04μs  true 3.450e-08       first_order Binding (290)       129.40873940228792
 
 MSQRTALS: 1024 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       47100000401.97μs false 5.551e+01           Timed out        1360.942190711669
-Optim, LBFGS                17329   486502.93μs  true 9.058e-08        GradientNorm    1.300826257026342e-11
-Speedmapping, acx           18633   196959.69μs  true 9.617e-08         first_order     1.099792308978135e-9
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     131385.09μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         39    3357177.68μs false 4.772e+01          Iterations Binding (1)        4676.787103916349
+Optim, LBFGS                 100003    2854204.18μs false 1.171e-02    Fevals > limit Binding (279)       129.19493082545196
+Speedmapping, acx               580       5520.44μs  true 4.010e-08       first_order Binding (281)        129.1949295723665
 
 EDENSCH: 2000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      219100000541.93μs false 1.722e+03           Timed out     1.9286954187882585e6
-Optim, LBFGS              4051490 95085427.05μs false 2.215e-07      NotImplemented     1.9181646680198214e6
-Speedmapping, acx             125      657.09μs  true 4.021e-09         first_order      1.918164668019821e6
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           69       3454.43μs false 1.806e+01                     Non-binding       12089.741233424558
+Optim, ConjugateGradient        135       7519.95μs  true 8.531e-08        GradientNorm Non-binding       12003.284592020764
+Optim, LBFGS                    384      15934.32μs  true 9.457e-08        GradientNorm Non-binding       12003.284592020764
+Speedmapping, acx                52        297.62μs  true 3.410e-08         first_order Non-binding       12003.284592020764
 
 DIXMAANK: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       54100000793.22μs false 1.401e+01           Timed out       2494.2498267902997
-Optim, LBFGS               848376103511175.87μs false 1.524e-11           Timed out       1688.3115750943375
-Speedmapping, acx           11850   310405.95μs  true 9.685e-08         first_order       1688.3115747764418
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         4551    1365134.19μs  true 9.094e-08                     Non-binding       1.0000000012143864
+Optim, ConjugateGradient     200032   20264936.92μs false 6.570e+00      Fevals > limit Non-binding        2.539826126158864
+Optim, LBFGS                 100001   11363371.13μs false 2.926e+00      Fevals > limit Non-binding       2.5879463401759093
+Speedmapping, acx             11567     288933.04μs  true 9.585e-08         first_order Non-binding       1.0000000206813466
 
 DIXMAANH: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       35100002264.02μs false 9.760e+00           Timed out        5513.134214188643
-Optim, LBFGS              1003181 73709472.89μs false 7.478e-11        GradientNorm        2813.482821231536
-Speedmapping, acx             727    15467.15μs  true 9.925e-08         first_order        2813.482820826226
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          268      63405.39μs  true 9.257e-08                     Non-binding       1.0000000000053277
+Optim, ConjugateGradient       1968     296929.37μs  true 9.969e-08        GradientNorm Non-binding       1.0000000000085751
+Optim, LBFGS                   3454     276901.03μs  true 9.881e-08        GradientNorm Non-binding       1.0000000000068963
+Speedmapping, acx               404       8286.00μs  true 8.937e-08         first_order Non-binding       1.0000000000010638
 
 DIXMAANI1: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       71100000715.02μs false 3.145e+00           Timed out       1827.0514188742989
-Optim, LBFGS              1001577107082585.10μs false 4.337e-12           Timed out        938.8109697042355
-Speedmapping, acx            9404   247406.15μs  true 9.948e-08         first_order        938.8109696745503
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         8156    2554893.01μs  true 8.388e-08                     Non-binding       1.0000000007346284
+Optim, ConjugateGradient      25815    4581716.34μs  true 4.479e-08        GradientNorm Non-binding       1.0000000001027693
+Optim, LBFGS                  76583    6487475.87μs  true 6.847e-08        GradientNorm Non-binding        1.000000000050536
+Speedmapping, acx             17393     445590.86μs  true 9.756e-08         first_order Non-binding         1.00000002150479
 
 DIXMAANB: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       50100000689.03μs false 4.262e+00           Timed out        4104.985505712922
-Optim, LBFGS                  540    32987.79μs  true 5.333e-11        GradientNorm       1906.0522099723614
-Speedmapping, acx              20      314.48μs  true 1.502e-08         first_order       1906.0522098641827
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           13       1537.03μs  true 8.248e-08                     Non-binding        1.000000000000113
+Optim, ConjugateGradient         21       2997.38μs  true 7.350e-09        GradientNorm Non-binding       1.0000000000000355
+Optim, LBFGS                    238      18687.55μs  true 8.580e-09        GradientNorm Non-binding        1.000000000000036
+Speedmapping, acx                18        283.20μs  true 7.246e-09         first_order Non-binding       1.0000000000000027
 
 DIXMAAND: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       89100000740.05μs false 1.101e+01           Timed out        4189.484372575945
-Optim, LBFGS                 1035    61314.87μs  true 3.605e-10        GradientNorm       3174.8431721521792
-Speedmapping, acx              26      395.16μs  true 7.777e-09         first_order        3174.843171739925
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           17       2432.07μs  true 3.183e-08                     Non-binding       1.0000000000000009
+Optim, ConjugateGradient         30       4092.45μs  true 1.476e-08        GradientNorm Non-binding       1.0000000000000508
+Optim, LBFGS                    313      24789.39μs  true 4.332e-08        GradientNorm Non-binding         1.00000000000051
+Speedmapping, acx                20        311.33μs  true 3.528e-08         first_order Non-binding       1.0000000000000253
 
 DIXMAANN: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      104100000730.04μs false 8.750e+00           Timed out       3051.1512071451034
-Optim, LBFGS               778817104895540.00μs false 1.411e-12           Timed out       1175.6418026675492
-Speedmapping, acx           10632   380518.58μs  true 9.231e-08         first_order       1175.6418026389726
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         6014    1993831.34μs  true 9.434e-08                     Non-binding       1.0000000007400678
+Optim, ConjugateGradient      31845    6547454.79μs  true 5.283e-08        GradientNorm Non-binding        1.000000000414493
+Optim, LBFGS                  87235    9459777.63μs  true 9.668e-08        GradientNorm Non-binding       1.0000000001578409
+Speedmapping, acx             16249     603399.80μs  true 9.922e-08         first_order Non-binding       1.0000000221488081
 
 DIXMAANJ: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  1000039194939682.96μs false 3.513e+00           Timed out       1319.4136070850393
-Optim, LBFGS               902511102583917.86μs false 1.088e-11           Timed out        1282.353827352575
-Speedmapping, acx           10135   265781.80μs  true 9.969e-08         first_order       1282.3538272752692
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         4275    1255268.13μs  true 9.484e-08                     Non-binding       1.0000000000726048
+Optim, ConjugateGradient     100001   16572584.15μs false 6.657e-03      Fevals > limit Non-binding       1.5520268915014712
+Optim, LBFGS                 200063   15451477.05μs false 9.055e+01      Fevals > limit Non-binding       1.6278076890707744
+Speedmapping, acx             17283     438916.46μs  true 9.643e-08         first_order Non-binding       1.0000000209214888
 
 DIXMAANM1: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       33100000763.89μs false 2.609e+00           Timed out       2103.7143956864456
-Optim, LBFGS               837101106124414.92μs false 2.223e-12           Timed out        912.7397834178765
-Speedmapping, acx           11303   409624.53μs  true 9.634e-08         first_order        912.7397834155505
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         8454    2822086.81μs  true 8.954e-08                     Non-binding       1.0000000010809482
+Optim, ConjugateGradient      21043    4438386.37μs  true 2.909e-08        GradientNorm Non-binding        1.000000000061764
+Optim, LBFGS                  70867    7477946.44μs  true 8.624e-08        GradientNorm Non-binding        1.000000000031789
+Speedmapping, acx             13365     470704.31μs  true 9.990e-08         first_order Non-binding       1.0000000210168385
 
 DIXMAANF: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      121100000761.03μs false 6.144e+00           Timed out        2257.927349802423
-Optim, LBFGS              1001959 73141204.12μs false 1.041e-17        GradientNorm       1532.1113824587078
-Speedmapping, acx             378     8098.06μs  true 9.737e-08         first_order        1532.111382356693
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          267      63089.77μs  true 8.793e-08                     Non-binding       1.0000000000070013
+Optim, ConjugateGradient        948     158018.67μs  true 9.789e-08        GradientNorm Non-binding       1.0000000000057616
+Optim, LBFGS                   2421     185412.28μs  true 9.872e-08        GradientNorm Non-binding       1.0000000000059706
+Speedmapping, acx               471       9630.41μs  true 9.100e-08         first_order Non-binding       1.0000000000008114
 
 DIXMAANL: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       68100001804.83μs false 9.739e+00           Timed out         4140.99822117542
-Optim, LBFGS              1025391 85382449.87μs false 6.874e-12        GradientNorm       2565.1488865016468
-Speedmapping, acx           14630   393214.52μs  true 9.932e-08         first_order       2565.1488816686997
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         4831    1427886.59μs  true 9.459e-08                     Non-binding         1.00000000214062
+Optim, ConjugateGradient     200040   21188147.07μs false 1.959e+01      Fevals > limit Non-binding        5.271301281341621
+Optim, LBFGS                 100061   10907445.19μs false 1.328e+02      Fevals > limit Non-binding        5.228813050804674
+Speedmapping, acx              9423     233959.81μs  true 8.919e-08         first_order Non-binding       1.0000000178987185
 
 DIXMAANC: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       75100000687.84μs false 6.242e+00           Timed out        4138.259670874727
-Optim, LBFGS                  429    28207.79μs  true 1.116e-10        GradientNorm       2309.3121299991835
-Speedmapping, acx              23      350.70μs  true 2.672e-08         first_order       2309.3121297945586
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           15       2020.76μs  true 9.547e-08                     Non-binding       1.0000000000000941
+Optim, ConjugateGradient         24       3551.00μs  true 1.222e-08        GradientNorm Non-binding         1.00000000000009
+Optim, LBFGS                    186      15288.85μs  true 6.348e-08        GradientNorm Non-binding       1.0000000000026932
+Speedmapping, acx                20        308.22μs  true 2.212e-09         first_order Non-binding       1.0000000000000002
 
 DIXMAANO: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      635100000714.06μs false 6.626e+00           Timed out       1966.5829656309245
-Optim, LBFGS               784271103581022.02μs false 1.183e-12           Timed out       1474.8648968519772
-Speedmapping, acx           10028   365088.17μs  true 9.982e-08         first_order       1474.8648967831275
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         6456    2080187.46μs  true 9.740e-08                     Non-binding       1.0000000004274987
+Optim, ConjugateGradient      34696    7141111.91μs  true 7.267e-08        GradientNorm Non-binding       1.0000000003230145
+Optim, LBFGS                  63359    6817183.54μs  true 9.284e-08        GradientNorm Non-binding       1.0000000000796532
+Speedmapping, acx             11952     431071.80μs  true 8.005e-08         first_order Non-binding       1.0000000109697404
 
 DIXMAANP: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      400100000684.02μs false 9.493e+00           Timed out       3327.9274035245717
-Optim, LBFGS               643739105637388.94μs false 2.301e-12           Timed out         2121.09790556935
-Speedmapping, acx           10603   383831.64μs  true 9.990e-08         first_order       2121.0979054051286
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         4455    1524636.21μs  true 7.647e-08                     Non-binding       1.0000000003116163
+Optim, ConjugateGradient      34773    7439102.47μs  true 6.072e-08        GradientNorm Non-binding       1.0000000050502564
+Optim, LBFGS                  81401    8620363.46μs  true 7.288e-08        GradientNorm Non-binding       1.0000000010952081
+Speedmapping, acx             15702     551105.05μs  true 8.325e-08         first_order Non-binding       1.0000000148915698
 
 DIXMAANA1: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      164100010975.84μs false 2.252e+00           Timed out        1562.905230101539
-Optim, LBFGS                  287    17179.56μs  true 2.228e-12        GradientNorm       1559.8107639494096
-Speedmapping, acx              12      228.24μs  true 5.115e-11         first_order        1559.810763888852
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           14       1758.73μs  true 1.167e-08                     Non-binding       1.0000000000000397
+Optim, ConjugateGradient         21       2557.64μs  true 4.059e-09        GradientNorm Non-binding       1.0000000000000109
+Optim, LBFGS                    102       6782.22μs  true 4.064e-09        GradientNorm Non-binding       1.0000000000000109
+Speedmapping, acx                12        215.83μs  true 1.235e-09         first_order Non-binding       1.0000000000000007
 
 DIXMAANE1: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       58100001974.11μs false 4.512e+00           Timed out        2796.183484950909
-Optim, LBFGS              1002539 73956702.95μs false 4.857e-17        GradientNorm        1188.259725058829
-Speedmapping, acx             368     7883.28μs  true 7.524e-08         first_order       1188.2597250047443
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          359      84122.24μs  true 8.534e-08                     Non-binding        1.000000000010723
+Optim, ConjugateGradient        741     113899.10μs  true 9.300e-08        GradientNorm Non-binding        1.000000000010418
+Optim, LBFGS                   2570     206495.94μs  true 9.391e-08        GradientNorm Non-binding       1.0000000000112728
+Speedmapping, acx               455       9291.48μs  true 2.301e-08         first_order Non-binding       1.0000000000000604
 
 DIXMAANG: 3000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       36100000725.03μs false 5.545e+00           Timed out        3772.629442448541
-Optim, LBFGS              1002151 73596446.99μs false 3.469e-17        GradientNorm       1937.7606991563853
-Speedmapping, acx             498    10665.35μs  true 9.925e-08         first_order       1937.7606989583612
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          273      64553.01μs  true 6.233e-08                     Non-binding       1.0000000000050226
+Optim, ConjugateGradient       1417     215204.50μs  true 9.980e-08        GradientNorm Non-binding        1.000000000005036
+Optim, LBFGS                   2513     190343.19μs  true 9.934e-08        GradientNorm Non-binding       1.0000000000053793
+Speedmapping, acx               488       9960.51μs  true 9.930e-08         first_order Non-binding       1.0000000000050482
 
 WOODS: 4000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      520    49560.82μs false 4.459e+00      NotImplemented       4013.3706337572344
-Optim, LBFGS                  781    50060.18μs  true 1.266e-08        GradientNorm    6.646187363714368e-16
-Speedmapping, acx             460     4958.88μs  true 2.072e-08         first_order    7.450204628522614e-13
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            5        458.83μs  true 0.000e+00                  Binding (4000)               8.771375e6
+Optim, ConjugateGradient         69   11929497.53μs false 6.446e+03       Iterations Binding (1000)       9.24468247088609e6
+Optim, LBFGS                 100002    6801445.01μs  true 0.000e+00   Fevals > limit Binding (4000)       8.77137501338797e6
+Speedmapping, acx               103        869.31μs  true 0.000e+00      first_order Binding (4000)               8.771375e6
 
 LIARWHD: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    42830100046803.00μs false 5.249e-09           Timed out        37913.44422407352
-Optim, LBFGS              2103080136385351.18μs false 7.614e-07           Timed out       37913.444219725076
-Speedmapping, acx              71     1403.28μs  true 1.470e-10         first_order       37913.444219725076
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           25       5542.78μs  true 5.554e-12                     Non-binding   1.6846527613747236e-20
+Optim, ConjugateGradient         89      11892.90μs  true 8.743e-08        GradientNorm Non-binding   1.9333372972708314e-17
+Optim, LBFGS                    142      13384.81μs  true 8.158e-08        GradientNorm Non-binding   1.9358502439389863e-17
+Speedmapping, acx                79       1492.10μs  true 2.728e-09         first_order Non-binding    2.308688090999018e-15
 
 BDQRTIC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       27100001400.95μs false 4.068e+02           Timed out        500663.2031745837
-Optim, LBFGS                 1204   133220.55μs  true 4.342e-10        GradientNorm        20006.25687843367
-Speedmapping, acx             106     2445.95μs  true 1.568e-09         first_order       20006.256878433676
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           52       3702.08μs false 4.141e+04                     Non-binding       25894.516692378318
+Optim, ConjugateGradient       3523     587691.97μs  true 9.171e-08        GradientNorm Non-binding       20006.256878433676
+Optim, LBFGS                   1052     131707.99μs  true 5.062e-08        GradientNorm Non-binding       20006.256878433676
+Speedmapping, acx               258       5602.68μs  true 7.572e-08         first_order Non-binding       20006.256878433673
 
 SCHMVETT: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      242    53797.35μs  true 8.885e-08        GradientNorm                 -14994.0
-Optim, LBFGS                  252    45493.26μs  true 8.305e-08        GradientNorm                 -14994.0
-Speedmapping, acx              82     5793.16μs  true 9.962e-08         first_order                 -14994.0
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           51      18693.59μs false 1.698e-06                     Non-binding                 -14994.0
+Optim, ConjugateGradient          1       1236.96μs false 1.056e+00      NotImplemented Non-binding      -14294.607674120512
+Optim, LBFGS                     47       7150.88μs false 1.056e+00      NotImplemented Non-binding      -14294.607674120512
+Speedmapping, acx                92       6323.69μs  true 1.265e-08         first_order Binding (2)      -14988.130491927808
 
 SROSENBR: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      116    18169.52μs false 2.602e-01      NotImplemented       154.64224617516498
-Optim, LBFGS                  157    12714.91μs  true 7.978e-10        GradientNorm    3.098116052170267e-16
-Speedmapping, acx              31      465.18μs  true 7.017e-12         first_order   1.9234108169266209e-19
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           20       5067.89μs  true 1.402e-09                     Non-binding   1.3907111129893354e-17
+Optim, ConjugateGradient         60       8451.93μs false 1.497e-04      NotImplemented Non-binding    0.0001032967950105693
+Optim, LBFGS                     97       8683.64μs false 1.497e-04      NotImplemented Non-binding    0.0001032968067624215
+Speedmapping, acx                31        455.13μs  true 7.017e-12         first_order Non-binding   1.9234108169266209e-19
 
 NCB20B: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     5887  1035805.03μs  true 9.525e-08        GradientNorm        7351.300597853552
-Optim, LBFGS                 3777   553479.59μs  true 8.582e-08        GradientNorm        7351.300595116978
-Speedmapping, acx            5692   370390.41μs  true 9.838e-08         first_order        7351.300594096428
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     112364.05μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient          1       1137.33μs false 4.000e+00      NotImplemented Non-binding                  10000.0
+Optim, LBFGS                     50       5959.32μs false 4.000e+00      NotImplemented Non-binding                  10000.0
+Speedmapping, acx              5787     350282.16μs  true 9.657e-08         first_order Non-binding        7351.300590425842
 
 QUARTC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   224047 29044161.25μs false 9.873e+04      NotImplemented     1.1179038249853103e9
-Optim, LBFGS                 5256   450362.94μs  true 3.976e-08        GradientNorm     3.141408506141678e-8
-Speedmapping, acx             108     1752.83μs  true 6.051e-08         first_order     1.783246523878415e-7
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           13        691.23μs false 7.046e+01                  Binding (4995)      6.23750978791737e17
+Optim, ConjugateGradient         39   15102262.50μs false 4.993e+11          Iterations Binding (1)     6.238845771517582e17
+Optim, LBFGS                 200040   12912750.01μs false 4.993e+11      Fevals > limit Non-binding     6.247206367415864e17
+Speedmapping, acx                47        683.65μs  true 6.455e-08      first_order Binding (4998)     6.237509787917368e17
 
 BROYDN3DLS: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       78    11634.15μs false 8.520e-03      NotImplemented       1.5327408706544858
-Optim, LBFGS                  349    34538.53μs  true 7.350e-08        GradientNorm       0.8809135203572963
-Speedmapping, acx             172     3174.82μs  true 9.880e-08         first_order       1.8843361523758562
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           48       1224.22μs false 4.800e+02                     Non-binding        534.3423620617153
+Optim, ConjugateGradient          1       1108.41μs false 3.800e+01      NotImplemented Non-binding                   5011.0
+Optim, LBFGS                     44       3371.10μs false 3.800e+01      NotImplemented Non-binding                   5011.0
+Speedmapping, acx                60       1052.85μs  true 6.769e-09         first_order Binding (1)      0.13251784724572144
 
 POWELLSG: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  2018326106531672.95μs false 1.009e-07           Timed out        4497.865187626896
-Optim, LBFGS                  737    56588.07μs  true 3.228e-10        GradientNorm        4497.865187852172
-Speedmapping, acx             676     9953.07μs  true 9.933e-08         first_order       4497.8651876829645
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           17       3323.42μs  true 3.433e-09                  Binding (1250)       20753.547717836584
+Optim, ConjugateGradient         37   14963045.48μs false 9.761e+01       Iterations Binding (1250)        54601.05506145657
+Optim, LBFGS                      0    7077933.79μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx                39        577.27μs  true 7.781e-09      first_order Binding (1250)       20753.547717836584
 
 TRIDIA: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       38100001121.04μs false 1.560e+05           Timed out     2.4323612030675337e6
-Optim, LBFGS                37410  3966964.24μs  true 4.312e-09        GradientNorm   1.2504247601928753e-11
-Speedmapping, acx            5882    96146.86μs  true 8.273e-09         first_order     6.73584965686089e-19
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                         1355     474310.90μs false 3.000e+04                     Non-binding       14998.999733227101
+Optim, ConjugateGradient       8290    1177195.90μs  true 9.189e-08        GradientNorm Non-binding    4.556819811210321e-16
+Optim, LBFGS                   8817     942063.11μs  true 9.292e-08        GradientNorm Non-binding   1.6861519634452205e-16
+Speedmapping, acx              3468      50477.42μs  true 7.607e-08         first_order Non-binding    4.564831859919715e-16
 
 GENHUMPS: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     4835  1657934.01μs false 3.358e-04      NotImplemented    0.0002960074663561432
-Optim, LBFGS                21409  3475339.98μs  true 2.864e-08        GradientNorm    1.850448640171182e-12
-Speedmapping, acx         1000001 67525753.02μs false 7.048e+00            max_eval       269099.67888903775
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            5        920.44μs false 4.322e+01                  Binding (4999)     1.2784453573177227e8
+Optim, ConjugateGradient          1       1307.69μs false 8.778e+01      NotImplemented Non-binding     1.2809812932201523e8
+Optim, LBFGS                     43       7570.59μs false 8.778e+01      NotImplemented Non-binding     1.2809812932201523e8
+Speedmapping, acx               103       6047.14μs  true 0.000e+00      first_order Binding (5000)     1.2784451036771561e8
 
 INDEF: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       24100001113.18μs false 2.000e+00           Timed out      -2272.6320664204513
-Optim, LBFGS               978956103085310.94μs false 7.491e+01           Timed out      -139857.86111806927
-Speedmapping, acx         1000000 49495750.42μs false 2.000e+00            max_eval    -1.8391954131900787e8
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          114      22846.73μs false 3.103e+01                     Non-binding    -3.419330103471207e53
+Optim, ConjugateGradient         74   14874746.61μs false 3.781e+02          Iterations Non-binding       -68150.16383799749
+Optim, LBFGS                     51      11851.76μs false 1.841e+00      NotImplemented Non-binding       4603.2873795320465
+Speedmapping, acx            100001    4772150.99μs false 1.000e+00      Fevals > limit Non-binding    -1.1484702595895752e8
 
 NONDQUAR: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   871144172458072.90μs false 9.688e+00           Timed out        4.397610552921495
-Optim, LBFGS               260429 18950423.92μs  true 9.654e-08        GradientNorm      6.28428446843377e-8
-Speedmapping, acx            8606   137977.17μs  true 9.976e-08         first_order    2.0815560884731196e-6
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           33       8635.14μs false 6.830e+00                    Binding (10)        5.905847623334981
+Optim, ConjugateGradient        103   15042651.09μs false 6.957e+02          Iterations Binding (1)        59.29387225349399
+Optim, LBFGS                 146384   10031064.99μs false 9.597e-03      Fevals > limit Binding (3)       1.7550603870159869
+Speedmapping, acx               980      14387.84μs  true 9.940e-08         first_order Binding (3)       1.7537342298888468
 
 TQUARTIC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     3945   688437.99μs false 4.022e-07      NotImplemented     2.242472157810534e-7
-Optim, LBFGS                   74     5412.70μs  true 3.789e-10        GradientNorm    2.243685555776915e-13
-Speedmapping, acx            2471    33159.43μs  true 1.831e-11         first_order     0.009998765601424093
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           18       3608.97μs  true 0.000e+00                     Binding (1)      0.16000000000000003
+Optim, ConjugateGradient         82   15225545.88μs false 7.692e-01          Iterations Non-binding      0.16008551512018246
+Optim, LBFGS                      0    7653983.83μs false       NaN                 AssertionError                       NaN
+Speedmapping, acx                12        204.57μs  true 0.000e+00         first_order Binding (1)      0.16000000000000003
 
 ARWHEAD: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       76100003941.06μs false 2.320e-02           Timed out      0.05587805368122645
-Optim, LBFGS               447965 20635119.64μs  true 1.218e-12        GradientNorm                      0.0
-Speedmapping, acx              15      219.54μs  true 6.128e-13         first_order                      0.0
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            8        775.74μs false 2.931e+04                     Non-binding       12090.520514143154
+Optim, ConjugateGradient         24       3602.10μs false 1.197e-02      NotImplemented Non-binding      0.02990238130769285
+Optim, LBFGS                     77       5071.50μs false 1.197e-02      NotImplemented Non-binding      0.02990238130587386
+Speedmapping, acx                20        286.58μs  true 1.152e-09         first_order Non-binding                      0.0
 
 DQRTIC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   224047 29003306.73μs false 9.873e+04      NotImplemented     1.1179038249853103e9
-Optim, LBFGS                 5256   450869.11μs  true 3.976e-08        GradientNorm     3.141408506141678e-8
-Speedmapping, acx             108     1744.79μs  true 6.051e-08         first_order     1.783246523878415e-7
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     191787.00μs false       NaN                    BoundsError                       NaN
+Optim, ConjugateGradient         39   14796313.33μs false 4.993e+11          Iterations Binding (1)     6.238845771517582e17
+Optim, LBFGS                 200040   12843541.15μs false 4.993e+11      Fevals > limit Non-binding     6.247206367415864e17
+Speedmapping, acx                47        711.32μs  true 6.455e-08      first_order Binding (4998)     6.237509787917368e17
 
 SINQUAD2: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    12710  2546195.73μs  true 1.912e-10        GradientNorm     9.878859047624925e-5
-Optim, LBFGS                  257    35506.86μs  true 9.036e-10        GradientNorm     9.878859164060274e-5
-Speedmapping, acx          201360 10953432.09μs  true 9.981e-08         first_order     9.892309821391777e-5
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           38      10645.33μs false 9.735e-02                     Non-binding      0.12006644320662163
+Optim, ConjugateGradient        358   14813468.24μs false 4.330e+00          Iterations Non-binding      0.06002900592518502
+Optim, LBFGS                    327      43334.11μs  true 3.014e-10        GradientNorm Binding (1)      0.02560000030123596
+Speedmapping, acx               663      29226.06μs  true 0.000e+00         first_order Binding (1)      0.02560000000000001
 
 NONCVXU2: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       17100001286.03μs false 8.878e+04           Timed out    3.2010763090947363e11
-Optim, LBFGS               486045100001528.02μs false 8.946e+04           Timed out    1.5585380295302594e11
-Speedmapping, acx            1359   103017.24μs  true 5.144e-08         first_order    1.5585358200213586e11
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                        23654   11270042.05μs false 2.033e-06                     Binding (3)       11584.459429152212
+Optim, ConjugateGradient         25   15441573.32μs false 8.670e+04          Iterations Binding (1)    3.0332403834989026e11
+Optim, LBFGS                 185791   28006667.14μs false 1.640e+01      Fevals > limit Non-binding       11600.402446100985
+Speedmapping, acx            100000    6763908.60μs false 5.528e-07            max_eval Binding (5)       11587.352259425323
 
 DQDRTIC: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient  2000868111354150.06μs false 9.574e-09           Timed out     2.0095920000060273e6
-Optim, LBFGS              1963011120638165.00μs false 9.292e-06           Timed out     2.0095920000000054e6
-Speedmapping, acx              26      389.22μs  true 8.017e-12         first_order               2.009592e6
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           17       2231.39μs false 1.200e+03                     Non-binding                   2700.0
+Optim, ConjugateGradient        152      19846.67μs  true 1.162e-08        GradientNorm Non-binding    4.670180275514243e-18
+Optim, LBFGS                     65       6404.22μs  true 2.566e-08        GradientNorm Non-binding   2.7584992243654477e-16
+Speedmapping, acx                18        293.34μs  true 2.127e-10         first_order Non-binding   2.0802588095422822e-22
 
 FREUROTH: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       28100001065.97μs false 7.329e+02           Timed out     1.2023707309903316e6
-Optim, LBFGS                 7497   734946.07μs  true 2.792e-09        GradientNorm     1.0340021342136848e6
-Speedmapping, acx              79     1890.99μs  true 4.230e-08         first_order     1.0340021303137005e6
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           19       3084.18μs false 1.756e-05                     Binding (2)        608215.6586295282
+Optim, ConjugateGradient         26   14840119.38μs false 8.327e+02          Iterations Binding (1)      3.706890615875321e6
+Optim, LBFGS                   1007     112680.82μs  true 3.194e-09        GradientNorm Binding (2)        608215.6586295291
+Speedmapping, acx                34        810.35μs  true 2.533e-10         first_order Binding (2)        608215.6586295282
 
 TOINTGSS: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       41100001050.00μs false 4.796e+00           Timed out       10947.667295869023
-Optim, LBFGS               832016100042081.83μs false 2.272e-10           Timed out       10012.085379815657
-Speedmapping, acx              54     2293.73μs  true 2.403e-08         first_order       10012.087350627793
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           22       5425.23μs  true 4.214e-08                     Non-binding       10.002000800319914
+Optim, ConjugateGradient        619     140340.50μs  true 4.274e-09        GradientNorm Non-binding       10.002000800319914
+Optim, LBFGS                 100081   10698859.93μs false       NaN      Fevals > limit Non-binding       10.014693075181954
+Speedmapping, acx                63       2764.51μs  true 2.165e-09         first_order Non-binding       10.002000800319914
 
 MOREBV: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient        5     1526.19μs  true 7.292e-08        GradientNorm   1.0390636363116897e-11
-Optim, LBFGS                    7     1563.58μs  true 7.292e-08        GradientNorm   1.0390636361256028e-11
-Speedmapping, acx               5      141.84μs  true 6.124e-08         first_order   1.0392835862589593e-11
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           21        447.08μs false 1.599e-07                     Non-binding   1.0395425222561866e-11
+Optim, ConjugateGradient          5       1592.46μs  true 7.292e-08        GradientNorm Non-binding    1.039063635837199e-11
+Optim, LBFGS                      7       1609.52μs  true 7.293e-08        GradientNorm Non-binding   1.0390635962359223e-11
+Speedmapping, acx                 5        133.08μs  true 6.124e-08         first_order Non-binding   1.0392835862589593e-11
 
 CRAGGLVY: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      273100043465.85μs false 5.074e+01           Timed out        7254.314072619096
-Optim, LBFGS               691810100321439.03μs false 6.248e-08           Timed out        7116.315347873886
-Speedmapping, acx             196     8971.76μs  true 4.460e-08         first_order        7116.315340044162
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     113507.03μs false       NaN                    BoundsError                       NaN
+Optim, ConjugateGradient        487      92512.15μs  true 9.396e-08        GradientNorm Non-binding       1688.2153097144587
+Optim, LBFGS                   2349     380403.26μs  true 5.839e-08        GradientNorm Non-binding        1688.215309714459
+Speedmapping, acx               199       8798.20μs  true 9.019e-08         first_order Non-binding       1688.2153097144587
 
 SPARSINE: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   563751114094418.05μs false 1.521e-04           Timed out     7.322854644419103e-8
-Optim, LBFGS               289531 57853067.66μs  true 9.923e-08        GradientNorm    4.898985944462599e-13
-Speedmapping, acx          710852100000142.10μs false 1.027e-02           Timed out      0.11630781072559998
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     124467.13μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient     200023   51143567.09μs false 2.966e+02      Fevals > limit Non-binding       31.225698804863164
+Optim, LBFGS                 200005   41165068.86μs false 1.135e+02      Fevals > limit Non-binding       1.1811824079068627
+Speedmapping, acx            100001   12521044.02μs false 2.612e-02      Fevals > limit Non-binding       1.1953084405219383
 
 NONCVXUN: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       18100001189.95μs false 1.097e+05           Timed out    3.3044714256111743e11
-Optim, LBFGS               728746134469953.06μs false 4.990e-04           Timed out    1.6635775199925623e11
-Speedmapping, acx            2876   224276.80μs  true 5.626e-08         first_order    1.6635775209547278e11
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                       100000   48846719.45μs false 2.898e-04                    Binding (26)       11600.756512827182
+Optim, ConjugateGradient         25   14944287.64μs false 1.056e+05          Iterations Binding (1)      3.08956047944921e11
+Optim, LBFGS                 143621   23712069.03μs false 5.938e+00      Fevals > limit Non-binding       11601.770445102133
+Speedmapping, acx            100000    6303827.89μs false 6.651e-05           max_eval Binding (11)       11597.819814527775
 
 ENGVAL1: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      157100015971.18μs false 1.210e+01           Timed out       10275.859048827235
-Optim, LBFGS              1001528 77177646.16μs false 4.062e-10        GradientNorm       10273.234281536443
-Speedmapping, acx              23      328.03μs  true 2.241e-08         first_order       10273.234280916571
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           18       3889.74μs false 3.238e+01                     Non-binding        5566.119152598236
+Optim, ConjugateGradient        113      15272.73μs  true 4.133e-08        GradientNorm Non-binding        5548.668419415788
+Optim, LBFGS                    706      78497.73μs  true 2.025e-08        GradientNorm Non-binding        5548.668419415788
+Speedmapping, acx                36        501.38μs  true 2.988e-08         first_order Non-binding        5548.668419415788
 
 NONDIA: 5000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    39260  3297340.35μs false 7.211e-01      NotImplemented        181.0367287216745
-Optim, LBFGS                 4030   310064.08μs false       NaN      NotImplemented                      NaN
-Speedmapping, acx             838    10197.34μs  true 9.376e-08         first_order    7.640994851423039e-11
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            5        565.06μs  true 0.000e+00                  Binding (4999)                 281196.0
+Optim, ConjugateGradient         73   14925876.14μs false 1.529e+02          Iterations Binding (1)        285491.9594652238
+Optim, LBFGS                 103447    7761070.97μs false 1.500e+02      Fevals > limit Binding (1)       281225.54670734383
+Speedmapping, acx               103       1022.93μs  true 0.000e+00      first_order Binding (4999)                 281196.0
 
 NCB20: 5010 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      161100001183.03μs false 1.361e+01           Timed out      -1083.2872998872535
-Optim, LBFGS                 7805  1098363.67μs  true 7.722e-10        GradientNorm      -1454.1038369328999
-Speedmapping, acx            9426   543966.60μs  true 9.950e-08         first_order      -1462.6682991069683
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          367      63054.92μs false 2.529e-06                  Binding (4745)        2598.622145783581
+Optim, ConjugateGradient          1       1114.13μs false 4.000e+00      NotImplemented Non-binding                10002.002
+Optim, LBFGS                     50       5551.44μs false 4.000e+00      NotImplemented Non-binding                10002.002
+Speedmapping, acx             16397     880455.35μs  true 7.889e-08      first_order Binding (4724)       2596.3511729724796
 
 FMINSURF: 5625 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient       76100010977.03μs false 3.796e-02           Timed out       24.644036510109558
-Optim, LBFGS               993711105608663.08μs false 7.291e-11           Timed out       13.051536213295675
-Speedmapping, acx           10387   328871.26μs  true 9.178e-08         first_order       13.051536227371225
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     111469.03μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         46   16775620.11μs false 1.862e-02          Iterations Binding (1)        27.18976799615933
+Optim, LBFGS                 100003    7658319.95μs false 3.340e-02     Fevals > limit Binding (13)         16.3057634665211
+Speedmapping, acx              1428      42247.16μs  true 9.144e-08         first_order Non-binding       1.0000000309976502
 
 FMINSRF2: 5625 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient      109100001202.82μs false 3.781e-02           Timed out       24.487831027556844
-Optim, LBFGS              2000103141521264.08μs false 1.825e-02           Timed out        21.51253889586533
-Speedmapping, acx            8130   254098.06μs  true 9.944e-08         first_order        1.025527052319696
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                            1     107022.05μs false       NaN              DimensionMismatch                       NaN
+Optim, ConjugateGradient         44   16541649.97μs false 2.223e-02          Iterations Binding (1)       27.087712575686144
+Optim, LBFGS                 100005    7404631.85μs false 3.761e-02      Fevals > limit Binding (5)        14.47961692762552
+Speedmapping, acx              1242      36496.52μs  true 7.641e-08         first_order Non-binding       1.0000170728474718
 
 CURLY20: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   396446100002455.00μs false 6.192e-03           Timed out    -1.0031625410771775e6
-Optim, LBFGS               388326 96543788.56μs  true 7.161e-08        GradientNorm    -1.0031369717384004e6
-Speedmapping, acx         1000002 89407838.11μs false 3.647e-04            max_eval       -998391.9117119187
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                        26769   21589272.69μs false 3.025e-04                    Binding (24)    -1.0028749355656555e6
+Optim, ConjugateGradient          1       2177.79μs false 3.860e+00      NotImplemented Non-binding       -1.343675753380224
+Optim, LBFGS                 100002   16316082.00μs false 2.018e+02      Fevals > limit Binding (5)         -999383.18335827
+Speedmapping, acx            100001    8391939.16μs false 2.312e-03    Fevals > limit Binding (620)         -996582.46447461
 
 CURLY10: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   410585100002027.99μs false 2.739e-03           Timed out     -1.003162566496468e6
-Optim, LBFGS               263225 61484343.37μs  true 7.196e-08        GradientNorm    -1.0031629024131879e6
-Speedmapping, acx         1000001 80741528.03μs false 1.425e-05            max_eval    -1.0031629010683455e6
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                        22944   18139706.23μs false 2.959e-04                     Binding (9)    -1.0028749355627537e6
+Optim, ConjugateGradient          1       2110.73μs false 1.583e+00      NotImplemented Non-binding      -0.6306184152244703
+Optim, LBFGS                 200040   37158045.05μs false 2.060e+02      Fevals > limit Non-binding        -998264.858153581
+Speedmapping, acx            100001    7604547.98μs false 4.588e-05   Fevals > limit Binding (1822)    -1.0028749292163793e6
 
 POWER: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   398610100001941.92μs false 1.125e+10           Timed out    2.5004854019097905e12
-Optim, LBFGS               408976100002401.11μs false 1.153e+10           Timed out      2.50869609715225e12
-Speedmapping, acx            1089    34107.65μs  true 5.514e-08         first_order    3.766579485528895e-11
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                          496     353710.50μs  true 9.936e-08                     Non-binding   1.1990263926898825e-10
+Optim, ConjugateGradient      53639   10854425.74μs  true 9.731e-08        GradientNorm Non-binding   1.0398483603196139e-10
+Optim, LBFGS                 200071   29456787.11μs false 2.091e+08      Fevals > limit Non-binding     4.900825353369438e10
+Speedmapping, acx              1521      44075.27μs  true 9.768e-08         first_order Non-binding    7.090795505715685e-11
 
 CURLY30: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   364321100002337.93μs false 1.069e-02           Timed out    -1.0031625343885289e6
-Optim, LBFGS               460572122928358.08μs false 9.370e-08           Timed out    -1.0031432962932267e6
-Speedmapping, acx          948920100000048.16μs false 1.097e-04           Timed out    -1.0031628988579394e6
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                        28976   23784209.16μs false 6.798e-04                    Binding (19)    -1.0028749355297603e6
+Optim, ConjugateGradient          1       2165.77μs false 6.932e+00      NotImplemented Non-binding      -2.1896375904938865
+Optim, LBFGS                 154003   38960886.00μs false 2.937e+02     Fevals > limit Binding (11)       -998905.5397286557
+Speedmapping, acx            100002    9893599.03μs false 1.836e-02    Fevals > limit Binding (411)       -997685.3303455279
 
 COSINE: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient   357404100002119.06μs false 7.065e-04           Timed out       -9998.999903124237
-Optim, LBFGS               360657100002516.98μs false 2.040e-01           Timed out        -9998.99999536596
-Speedmapping, acx         1000002 83159379.01μs false 1.758e+00            max_eval      -5556.4650529965265
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           31       6657.15μs  true 2.952e-08                  Binding (9998)        705.1284798824845
+Optim, ConjugateGradient          1       2197.92μs false 9.589e-01      NotImplemented Non-binding         8774.94803634173
+Optim, LBFGS                 100030   29197112.08μs false 1.221e+00      Fevals > limit Non-binding       -9998.992663165442
+Speedmapping, acx              3653     263728.44μs  true 5.424e-08      first_order Binding (9996)        703.3592562265328
 
 DIXON3DQ: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient    30002 10720535.23μs false 5.360e-07      NotImplemented    0.0012284994322227286
-Optim, LBFGS               119177 21995017.84μs  true 9.768e-08        GradientNorm    1.2830296117718597e-8
-Speedmapping, acx           97680  2931265.23μs  true 9.999e-08         first_order    0.0005025348031645479
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                        36466   24975612.02μs  true 9.357e-08                     Binding (2)        4.500000072678273
+Optim, ConjugateGradient         62   30650256.60μs false 3.001e+00          Iterations Binding (1)        4.633916495603215
+Optim, LBFGS                 200036   30101104.97μs false 3.000e+00      Fevals > limit Non-binding        4.508890376223858
+Speedmapping, acx             19671     636877.98μs  true 9.805e-08         first_order Binding (2)        4.500057382383752
 
 SPARSQUR: 10000 parameters, abstol = 1.0e-7.
-
-Solver                    f evals          time  conv   |resid|                 log                      obj
-Optim, ConjugateGradient     3363   818910.83μs  true 9.393e-08        GradientNorm     5.449200283582466e-9
-Optim, LBFGS                 2082   453615.62μs  true 5.955e-08        GradientNorm     9.34136768121753e-10
-Speedmapping, acx              58     3512.33μs  true 4.907e-08         first_order    4.026025213352197e-10
+Solver                   Grad evals            time  conv   |resid|                             log                      obj
+LBFGSB                           45      29387.99μs  true 6.607e-08                     Non-binding    9.072076389272298e-12
+Optim, ConjugateGradient         65   31339171.47μs false 1.393e+05          Iterations Non-binding      7.448518316444763e6
+Optim, LBFGS                   1150     306175.94μs  true 8.711e-08        GradientNorm Non-binding     1.605404678062682e-9
+Speedmapping, acx                58       3508.70μs  true 3.329e-08         first_order Non-binding   2.3997276830899155e-10
 =#

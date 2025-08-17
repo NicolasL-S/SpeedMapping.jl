@@ -47,9 +47,10 @@ function one_problem_many_solvers!(problems, pr_name, time_limit, abstol,
 
 	# Text output
 	out_str = "\n" * pr_name * ": $(length(problem.x0)) parameters, abstol = $(abstol[pr]).\n" 
-	titlevec = ((F_name, 10), ("time", 14), ("conv", 6), ("|resid|", 10), ("log", 30))
+	sp = (10, 16, 6, 10, 32, 25)
+	titlevec = ((F_name, sp[1]), ("time", sp[2]), ("conv", sp[3]), ("|resid|", sp[4]), ("log", sp[5]))
 	out_str *= padright("Solver", Lname) * prod([padleft(item...) for item in titlevec])
-	hasproperty(problem, :obj) && problem.obj !== nothing && (out_str *= padleft("obj", 25))
+	hasproperty(problem, :obj) && problem.obj !== nothing && (out_str *= padleft("obj", sp[6]))
 	out_str *= "\n"
 
 	for i in eachindex(solver_names)
@@ -63,9 +64,9 @@ function one_problem_many_solvers!(problems, pr_name, time_limit, abstol,
 		# Text output
 		t_str = cfmt("%10.2f ", time * (10^(3tunits[pr] - 3))) * ("s", "ms", "μs")[tunits[pr]]
 		res_str = @sprintf "%.3e" res
-		resvec = ((Feval, 10), (t_str, 14), (converged, 6), (res_str, 10), (first(rlog,29), 30))
+		resvec = ((Feval, sp[1]), (t_str, sp[2]), (converged, sp[3]), (res_str, sp[4]), (first(rlog,sp[5] - 1), sp[5]))
 		out_str *= padright(name, Lname) * prod([padleft(res...) for res in resvec])
-		hasproperty(optional, :obj) && (out_str *= " "*padleft(optional.obj, 24))
+		hasproperty(optional, :obj) && (out_str *= " "*padleft(optional.obj, sp[6] - 1))
 		out_str *= "\n"
 	end
 	print(out_str) # All text output at once in case we are using Threads.@threads
@@ -74,7 +75,7 @@ end
 function many_problems_many_solvers(problems, fixed_point_solvers, problem_names, 
 		solver_names, compute_norm; abstol = 1e-7, time_limit = 10., tunits = 1, 
 		F_name = "F evals", gen_Feval_limit = (problem, time_limit) -> 100000, draws = 1, 
-		proper_benchmark = true, results = nothing, problem_start = 1
+		proper_benchmark = true, results = nothing, problem_start = 1, multithreaded = false
 	)
 	length(tunits) == 1 && (tunits = tunits * ones(length(problem_names)))
 	length(abstol) == 1 && (abstol = abstol * ones(length(problem_names)))
@@ -87,7 +88,7 @@ function many_problems_many_solvers(problems, fixed_point_solvers, problem_names
 	
 	for pr in problem_start:length(problem_names)
 		pr_name = problem_names[pr]
-		if proper_benchmark
+		if !multithreaded
 			for draw = 1:draws # If the functions generate random data eash draw
 				one_problem_many_solvers!(problems, pr_name, time_limit, 
 					abstol, pr, F_name, Lname, solver_names, fixed_point_solvers, 
