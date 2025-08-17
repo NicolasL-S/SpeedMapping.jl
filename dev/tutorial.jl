@@ -65,39 +65,35 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 # [EM-algorithm](https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm) 
 # example from [Hasselblad (1969)](https://www.tandfonline.com/doi/abs/10.1080/01621459.1969.10501071).
 
-## Speedmapping always assumes that the problem is a minimization so the objective is the negative log likelihood.
 function neg_log_likelihood(x)
-	freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
+    freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
     p, μ1, μ2 = x
-    yfact = μ1expy = μ2expy = 1.
-    l = 0.
+    yfact = μ1expy = μ2expy = 1
+    log_lik = 0
     for y in eachindex(freq)
-        l += freq[y] * log((p * exp(-μ1) * μ1expy + (1 - p) * exp(-μ2) * μ2expy) / yfact)
+        log_lik += freq[y] * log((p * exp(-μ1) * μ1expy + (1 - p) * exp(-μ2) * μ2expy) / yfact)
         yfact *= y
         μ1expy *= μ1
         μ2expy *= μ2
     end
-    return -l
+    return -log_lik # Negative log likelihood to get a minimization problem
 end
 
 function EM_map!(xout, xin)
-	freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
+    freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
     p, μ1, μ2 = xin
-    sum_freq_z1 = sum_freq_z2 = sum_freq_y_z1 = sum_freq_y_z2 = 0.0
-    μ1expy = μ2expy = 1.0
+    sum_freq_z1 = sum_freq_z2 = sum_freq_y_z1 = sum_freq_y_z2 = 0
+    μ1expy = μ2expy = 1
     for i in eachindex(freq)
-        z = p * exp(-μ1) * μ1expy / (p * exp(-μ1) * μ1expy + (1. - p) * exp(-μ2) * μ2expy)
+        z = p * exp(-μ1) * μ1expy / (p * exp(-μ1) * μ1expy + (1 - p) * exp(-μ2) * μ2expy)
         sum_freq_z1   += freq[i] * z
-        sum_freq_z2   += freq[i] * (1.0 - z)
-        sum_freq_y_z1 += (i-1) * freq[i] * z
-        sum_freq_y_z2 += (i-1) * freq[i] * (1.0 - z)
+        sum_freq_z2   += freq[i] * (1 - z)
+        sum_freq_y_z1 += (i - 1) * freq[i] * z
+        sum_freq_y_z2 += (i - 1) * freq[i] * (1 - z)
         μ1expy *= μ1
         μ2expy *= μ2
     end
-    xout[1] = sum_freq_z1 / sum(freq)
-    xout[2] = sum_freq_y_z1 / sum_freq_z1
-    xout[3] = sum_freq_y_z2 / sum_freq_z2
-    return xout
+    xout .= (sum_freq_z1 / sum(freq), sum_freq_y_z1 / sum_freq_z1, sum_freq_y_z2 / sum_freq_z2)
 end
 
 res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa);
@@ -136,12 +132,12 @@ res_static = speedmapping(x0s; m = x -> power_iteration(x, As));
 
 # Comparing speed gains
 
-using BenchmarkTools
+using BenchmarkTools, Unitful
 bench_eigen = @benchmark eigen($A);
 bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A));
 bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache); # Pre-allocated
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)); # Non allocating
-times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])))/1000 .* u"μs";
+times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times]))) .* u"ns";
 display(hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"], times))
 
 # ## Working with scalars
