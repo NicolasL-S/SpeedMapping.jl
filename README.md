@@ -2,11 +2,8 @@
 
 [![Build Status](https://github.com/NicolasL-S/SpeedMapping.jl/workflows/CI/badge.svg)](https://github.com/NicolasL-S/SpeedMapping.jl/actions)
 [![codecov](https://codecov.io/gh/NicolasL-S/SpeedMapping.jl/branch/main/graph/badge.svg?token=UKzBbD3WeQ)](https://codecov.io/gh/NicolasL-S/SpeedMapping.jl)
-
 [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://NicolasL-S.github.io/SpeedMapping.jl/stable/)
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://NicolasL-S.github.io/SpeedMapping.jl/dev/)
-[![Build Status](https://github.com/NicolasL-S/SpeedMapping.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/NicolasL-S/SpeedMapping.jl/actions/workflows/CI.yml?query=branch%3Amain)
-[![Coverage](https://codecov.io/gh/NicolasL-S/SpeedMapping.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/NicolasL-S/SpeedMapping.jl)
 
 
 SpeedMapping solves three types of problems:
