@@ -34,8 +34,7 @@ x0 = ones(n);
 
 # Speedmapping has one mandatory argument: the starting point ``x0``. The mapping is specified with the keyword argument ``m!``.
 using SpeedMapping
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A));
-display(res)
+return speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A));
 
 # The dominant eigenvalue is:
 v = res.minimizer; ## The dominant eigenvector
@@ -43,13 +42,12 @@ dominant_eigenvalue = v'A*v/v'v;
 eigen(A).values[10] ≈ dominant_eigenvalue
 
 # With `m!`, the default algorithm is `algo = :acx`. To switch, set `algo = :aa`.
-res_aa = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa);
-display(res_aa)
+return speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa)
 
 # By default, **AA** uses [adaptive relaxation](https://arxiv.org/abs/2408.16920), which can 
 # reduce the number of iterations. It is specified by the keyword argument 
 # `adarelax = :minimum_distance`. For constant relaxation, set `adarelax = :none`.
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarelax = :none);
+speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarelax = :none);
 
 # Another recent development for **AA** is **Composite AA** by [Chen and Vuik, 2022](https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096).
 # A one-step **AA** iteration (using 2 maps) is inserted between 2 full **AA** steps, which reduces 
@@ -96,8 +94,7 @@ function EM_map!(xout, xin)
     xout .= (sum_freq_z1 / sum(freq), sum_freq_y_z1 / sum_freq_z1, sum_freq_y_z2 / sum_freq_z2)
 end
 
-res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa);
-display(res_with_objective)
+return res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa)
 
 # ## Avoiding memory allocation
 #
@@ -138,9 +135,8 @@ bench_eigen = @benchmark eigen($A);
 bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A));
 bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache);
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As));
-times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times]))) .* u"ns";
+times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])))/1000 .* u"μs";
 return hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"],times)
-
 
 # ## Working with scalars
 #
@@ -195,8 +191,7 @@ speedmapping((-1.2, 1.); g = g_Rosenbrock);
 
 # Scalar functions can also be supplied. E.g. $f(x) = e^x + x^2$
 
-res_scalar = speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x);
-display(res_scalar)
+return speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x);
 
 # ## Adding box constraint
 # 
