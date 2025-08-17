@@ -73,8 +73,8 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 
 using FixedPointTestProblems
 EMx0, EMmap!, EMobj = testproblems["Hasselblad, Poisson mixtures"]();
-display(speedmapping(EMx0; m! = EMmap!, algo = :aa))
-display(speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa))
+res_with_objective = speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa)
+display(res_with_objective)
 
 # ## Avoiding memory allocation
 #
@@ -105,7 +105,8 @@ As = @SMatrix ones(n,n);
 As += Diagonal(1:n);
 x0s = @SVector ones(n);
 
-speedmapping(x0s; m = x -> power_iteration(x, As));
+res_static = speedmapping(x0s; m = x -> power_iteration(x, As))
+display(res_static)
 
 # Comparing speed gains
 
@@ -114,8 +115,8 @@ bench_eigen = @benchmark eigen($A);
 bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A));
 bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache); # Pre-allocated
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)); # Non allocating
-t = Int.(round.(median.((bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times))));
-println("eigen: $(t[1]) ns\nAllocating: $(t[2]) ns\nPre-allocated: $(t[3]) ns\nNon allocating: $(t[4]) ns")
+times = Int.(round.(median.((bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times))));
+display(hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"], times))
 
 # ## Working with scalars
 #
