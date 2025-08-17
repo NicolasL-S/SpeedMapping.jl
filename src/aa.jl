@@ -98,7 +98,7 @@ function do_after_m!(g, xout, xin, ind, bounds, buffer)
         box_constraint!(xout, xin, bounds, buffer, true)
         g .= xout .- xin
     end
-    return true, sumsq(g) #lpnorm(g, 2)
+    return true, lpnorm(g, 2)
 end
 
 function safe_map!(m!, r!, c, ind, max_new_normsq_g, bounds, buffer, true_shape)
@@ -232,7 +232,7 @@ function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default,
         aa_step = ind.lags > 0
         if aa_step
             c.ΔG[ind.i] .= c.g .- c.g_old
-            lpnorm(c.ΔG[ind.i], 2) < FT(1e-100) && (aa_step = false)
+            dot(c.ΔG[ind.i],c.ΔG[ind.i]) < FT(1e-100) && (aa_step = false)
         end
         aa_step && safe_qradd!(c, ind, max_qrdeletes, condition_max) # Note, safe_qradd! may reduce ind.lags
 
@@ -288,9 +288,11 @@ function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default,
         
         normsq_g = safe_map!(m!, r!, c, ind, max_new_normsq_g, bounds, buffer, true_shape)
 
-        store_trace && push!(trace, AaState{T, FT}(copy(c.x), ind.lags, β, lpnorm(c.g, pnorm)))
+        lpnormsq_g = pnorm == 2 ? normsq_g : lpnorm(r_now, pnorm)^2
 
-        normsq_g < abstolsq && break
+        store_trace && push!(trace, AaState{T, FT}(copy(c.x), ind.lags, β, lpnormsq_g))
+
+        lpnormsq_g < abstolsq && break
         
         if adarel == :minimum_distance && iter >= 2
             last_β_minimum_distance = β_minimum_distance

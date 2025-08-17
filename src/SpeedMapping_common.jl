@@ -33,8 +33,7 @@ accurate_cdot(x, y, FT) :: FT = (eltype(x) <: Real && eltype(y) <: Real) ? accur
 accurate_cdot(x, FT) = accurate_cdot(x, x, FT)
 =#
 
-cdot(x, y, FT) :: FT = real(dot(x,y)) where FT <: AbstractFloat # To make sure that the compiler infers the type FT, even with unusual inputs like complex arrays. Not entirely sure this is necessary, but better safe than sorry.
-cdot(x, FT) :: FT = cdot(x, x, FT) where FT <: AbstractFloat # To make sure that the compiler infers the type FT, even with unusual inputs like complex arrays. Not entirely sure this is necessary, but better safe than sorry.
+cdot(x, y, FT :: Type) :: FT = real(dot(x,y)) # To help the compiler infers the type FT, even with unusual inputs like complex arrays. Not entirely sure this is necessary, but I've had headaches in the past and better safe than sorry.
 
 #####
 ##### Core functions

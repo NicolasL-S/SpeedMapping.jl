@@ -62,7 +62,7 @@ end
     bounds.l ≠ nothing && ((x_out, r, err) = box_constraints_and_update_resid_low!(max, x_out, r, err, x_in, bounds.l, params_F, ip, α))
     bounds.u ≠ nothing && ((x_out, r, err) = box_constraints_and_update_resid_high!(min, x_out, r, err, x_in, bounds.u, params_F, ip, α))
 
-    return x_out, r, cdot(err, FT)
+    return x_out, r, cdot(err, err, FT)
 end
 
 function acx(
@@ -159,7 +159,7 @@ function acx(
                 if isbad(rr_now) || rr_now > rr_best * FT(4)
                     up = log_α
                     log_α = low == -Inf ? log_α - FT(5) : (log_α + low) * FT(0.5)
-                elseif !(cdot(x_best, r1, FT) / cdot(x_best, FT) < FT(100))
+                elseif !(cdot(x_best, r1, FT) / cdot(x_best, x_best, FT) < FT(100))
                     low = log_α
                     log_α = up == Inf ? log_α + FT(5) : (log_α + up) * FT(0.5)
                 else
@@ -222,7 +222,7 @@ function acx(
             @bb @. r2 -= r1
 #            σ = -abs(p == 2 ? accurate_cdot(r2, r1, FT) / accurate_cdot(r2, FT) : 
 #                accurate_cdot(r3, r2, FT) / accurate_cdot(r3, FT))
-            σ = -abs(p == 2 ? cdot(r2, r1, FT) / cdot(r2, FT) : cdot(r3, r2, FT) / cdot(r3, FT))
+            σ = -abs(p == 2 ? cdot(r2, r1, FT) / cdot(r2, r2, FT) : cdot(r3, r2, FT) / cdot(r3, r3, FT))
         end
 
         if isbad(σ) || !good_maps

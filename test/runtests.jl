@@ -1,5 +1,5 @@
 using Test
-using LinearAlgebra: Hermitian, Diagonal, norm
+using LinearAlgebra: Hermitian, Diagonal, norm, mul!
 using SpeedMapping
 
 function f(x) # Easy Rosenbrock objective
@@ -35,7 +35,7 @@ A = C + C'
 B = Hermitian(ones(10) * ones(10)' .* im + Diagonal(1:10))
 
 function m!(x_out, x_in, M) # map for the power method
-    x_out .= M * x_in
+    mul!(x_out, M, x_in)
     x_out ./= norm(x_out, Inf)
 end
 
