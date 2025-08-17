@@ -19,6 +19,6 @@ makedocs(
                ])
 #deploydocs(; repo="github.com/NicolasL-S/SpeedMapping.jl.git")
 deploydocs(;
-    repo="github.com/NicolasL-S/SpeedMapping.jl",
+    repo="github.com/NicolasL-S/SpeedMapping.jl.git",
     devbranch="MajorRefactor",
 )
