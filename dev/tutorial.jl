@@ -40,7 +40,8 @@ x0 = ones(n);
 
 # Speedmapping has one mandatory argument: the starting point ``x0``. The mapping is specified with the keyword argument ``m!``.
 using SpeedMapping
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A))
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A));
+display(res)
 
 # The dominant eigenvalue is:
 v = res.minimizer; ## The dominant eigenvector
@@ -48,7 +49,8 @@ dominant_eigenvalue = v'A*v/v'v;
 eigen(A).values[10] ≈ dominant_eigenvalue
 
 # With `m!`, the default algorithm is `algo = :acx`. To switch, set `algo = :aa`.
-speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa)
+res_aa = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa);
+display(res_aa)
 
 # By default, **AA** uses [adaptive relaxation](https://arxiv.org/abs/2408.16920), which can 
 # reduce the number of iterations. It is specified by the keyword argument 
@@ -71,9 +73,8 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 
 using FixedPointTestProblems
 EMx0, EMmap!, EMobj = testproblems["Hasselblad, Poisson mixtures"]();
-res1 = speedmapping(EMx0; m! = EMmap!, algo = :aa);
-res2 = speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa);
-println("Without objective: maps: $(res1.maps), objective evaluations: $(res1.f_calls)\nWith objective: maps: $(res2.maps), objective evaluations: $(res2.f_calls)")
+display(speedmapping(EMx0; m! = EMmap!, algo = :aa))
+display(speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa))
 
 # ## Avoiding memory allocation
 #
