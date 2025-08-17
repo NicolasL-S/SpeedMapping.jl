@@ -14,12 +14,6 @@
 #
 # # Accelerating convergent mapping iterations
 #
-# Let $F:\mathbb{R}^n\rightarrow\mathbb{R}^n$ and $x \in \mathbb{R}^n$ be a reasonable starting 
-# point. If the series $x, F(x), F(F(x)),...$ converges to $x^*$ where $F(x^*) = x^*$, the **ACX** 
-# algorithm and [**AA** with adative relaxation](https://arxiv.org/abs/2408.16920) can be used to 
-# accelerate the convergence. If $F$ does not converge, the problem can simply be redefined as 
-# [solving $G(x) = F(x) - x = 0$](#Solving-non-linear-systems-of-equations).
-#
 # Let's find the dominant eigenvalue of a matrix $A$ using the accelerated [Power iteration](https://en.wikipedia.org/wiki/Power_iteration).
 
 using LinearAlgebra
@@ -73,7 +67,7 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 
 using FixedPointTestProblems
 EMx0, EMmap!, EMobj = testproblems["Hasselblad, Poisson mixtures"]();
-res_with_objective = speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa)
+res_with_objective = speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa);
 display(res_with_objective)
 
 # ## Avoiding memory allocation
@@ -105,7 +99,7 @@ As = @SMatrix ones(n,n);
 As += Diagonal(1:n);
 x0s = @SVector ones(n);
 
-res_static = speedmapping(x0s; m = x -> power_iteration(x, As))
+res_static = speedmapping(x0s; m = x -> power_iteration(x, As));
 display(res_static)
 
 # Comparing speed gains
