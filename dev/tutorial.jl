@@ -63,11 +63,46 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 # This can be done by supplying an objective function (assumed to be a minimization problem) using 
 # `f` as keyword argument. Here is an illustrative
 # [EM-algorithm](https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm) 
-# example from the library FixedPointTestProblems.jl.
+# example from [Hasselblad (1969)](https://www.tandfonline.com/doi/abs/10.1080/01621459.1969.10501071).
 
-using FixedPointTestProblems
-EMx0, EMmap!, EMobj = testproblems["Hasselblad, Poisson mixtures"]();
-res_with_objective = speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa);
+# # Since speedmapping always assumes that the problem is a minimization, the objective is the 
+# # negative log likelihood.
+function neg_log_likelihood(x)
+	freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
+    p, μ₁, μ₂ = x
+    yfact = μ₁expy = μ₂expy = 1.
+    l = 0.
+    for y in eachindex(freq)
+        l += freq[y] * log((p * exp(-μ₁) * μ₁expy + 
+                        (1 - p) * exp(-μ₂) * μ₂expy) / yfact)
+        yfact *= Float64(y)
+        μ₁expy *= μ₁
+        μ₂expy *= μ₂
+    end
+    return -l
+end
+
+function EM_map(xout, xin)
+	freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
+    p, μ₁, μ₂ = xin
+    sum_freq_z₁ = sum_freq_z₂ = sum_freq_y_z₁ = sum_freq_y_z₂ = 0.0
+    μ₁expy = μ₂expy = 1.0
+    for i in eachindex(freq)
+        z = p * exp(-μ₁) * μ₁expy / (p * exp(-μ₁) * μ₁expy + (1. - p) * exp(-μ₂) * μ₂expy)
+        sum_freq_z₁   += freq[i] * z
+        sum_freq_z₂   += freq[i] * (1.0 - z)
+        sum_freq_y_z₁ += (i-1) * freq[i] * z
+        sum_freq_y_z₂ += (i-1) * freq[i] * (1.0 - z)
+        μ₁expy *= μ₁
+        μ₂expy *= μ₂
+    end
+    xout[1] = sum_freq_z₁ / sum(freq)
+    xout[2] = sum_freq_y_z₁ / sum_freq_z₁
+    xout[3] = sum_freq_y_z₂ / sum_freq_z₂
+    return xout
+end
+
+res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa);
 display(res_with_objective)
 
 # ## Avoiding memory allocation
