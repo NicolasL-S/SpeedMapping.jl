@@ -14,9 +14,39 @@ function power_iteration!(xout, xin, A)
     xout ./= maxabs
 end;
 x0 = ones(n);</code></pre><p>Speedmapping has one mandatory argument: the starting point <span>$x0$</span>. The mapping is specified with the keyword argument <span>$m!$</span>.</p><pre><code class="language-julia hljs">using SpeedMapping
-return speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A));</code></pre><p>The dominant eigenvalue is:</p><pre><code class="language- hljs">v = res.minimizer; ## The dominant eigenvector
+res = speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A));
+display(res)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">• minimizer: 10-element Vector{Float64}:
+ 0.4121491397959738
+ 0.4409506028458422
+ 0.47407986435268584
+ 0.5125916155854076
+ 0.5579135744375137
+ 0.6120273732149385
+ 0.6777660401920018
+ 0.7593262778315447
+ 0.8632012008768285
+ 1.0
+
+Result of SpeedMapping, acx algo
+• maps: 16  • iterations: 6  • residual_norm: = 3.664942616680641e-9
+• status: first_order</code></pre><p>The dominant eigenvalue is:</p><pre><code class="language-julia hljs">v = res.minimizer; ## The dominant eigenvector
 dominant_eigenvalue = v&#39;A*v/v&#39;v;
-eigen(A).values[10] ≈ dominant_eigenvalue</code></pre><p>With <code>m!</code>, the default algorithm is <code>algo = :acx</code>. To switch, set <code>algo = :aa</code>.</p><pre><code class="language-julia hljs">return speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A), algo = :aa)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi"></code></pre><p>By default, <strong>AA</strong> uses <a href="https://arxiv.org/abs/2408.16920">adaptive relaxation</a>, which can reduce the number of iterations. It is specified by the keyword argument <code>adarelax = :minimum_distance</code>. For constant relaxation, set <code>adarelax = :none</code>.</p><pre><code class="language-julia hljs">speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A), algo = :aa, adarelax = :none);</code></pre><p>Another recent development for <strong>AA</strong> is <strong>Composite AA</strong> by <a href="https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096">Chen and Vuik, 2022</a>. A one-step <strong>AA</strong> iteration (using 2 maps) is inserted between 2 full <strong>AA</strong> steps, which reduces the computation and can speed-up some applications. The default is <code>composite = :none</code>. Two versions are available:</p><pre><code class="language-julia hljs">res = speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A), algo = :aa, composite = :aa1);
+eigen(A).values[10] ≈ dominant_eigenvalue</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">true</code></pre><p>With <code>m!</code>, the default algorithm is <code>algo = :acx</code>. To switch, set <code>algo = :aa</code>.</p><pre><code class="language-julia hljs">res_aa = speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A), algo = :aa);
+display(res_aa)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">• minimizer: 10-element Vector{Float64}:
+ 0.412149137089775
+ 0.44095060327353647
+ 0.47407986082156256
+ 0.5125916088599349
+ 0.5579135698434506
+ 0.6120273645599557
+ 0.6777660340915559
+ 0.7593262700274771
+ 0.8632011949395236
+ 1.0
+
+Result of SpeedMapping, aa algo
+• maps: 12  • iterations: 11  • residual_norm: = 7.238700125150564e-9
+• status: first_order</code></pre><p>By default, <strong>AA</strong> uses <a href="https://arxiv.org/abs/2408.16920">adaptive relaxation</a>, which can reduce the number of iterations. It is specified by the keyword argument <code>adarelax = :minimum_distance</code>. For constant relaxation, set <code>adarelax = :none</code>.</p><pre><code class="language-julia hljs">res = speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A), algo = :aa, adarelax = :none);</code></pre><p>Another recent development for <strong>AA</strong> is <strong>Composite AA</strong> by <a href="https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096">Chen and Vuik, 2022</a>. A one-step <strong>AA</strong> iteration (using 2 maps) is inserted between 2 full <strong>AA</strong> steps, which reduces the computation and can speed-up some applications. The default is <code>composite = :none</code>. Two versions are available:</p><pre><code class="language-julia hljs">res = speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A), algo = :aa, composite = :aa1);
 res = speedmapping(x0; m! = (xout, xin) -&gt; power_iteration!(xout, xin, A), algo = :aa, composite = :acx2);</code></pre><p>Some mapping iterations maximize or minimize a certain objective function. Since some <strong>AA</strong> steps can deteriorate the objective, it would be best to avoid them by falling back to the last map. This can be done by supplying an objective function (assumed to be a minimization problem) using <code>f</code> as keyword argument. Here is an illustrative <a href="https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm">EM-algorithm</a> example from <a href="https://www.tandfonline.com/doi/abs/10.1080/01621459.1969.10501071">Hasselblad (1969)</a>.</p><pre><code class="language-julia hljs">function neg_log_likelihood(x)
     freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
     p, μ1, μ2 = x
@@ -48,7 +78,15 @@ function EM_map!(xout, xin)
     xout .= (sum_freq_z1 / sum(freq), sum_freq_y_z1 / sum_freq_z1, sum_freq_y_z2 / sum_freq_z2)
 end
 
-return res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi"></code></pre><h2 id="Avoiding-memory-allocation"><a class="docs-heading-anchor" href="#Avoiding-memory-allocation">Avoiding memory allocation</a><a id="Avoiding-memory-allocation-1"></a><a class="docs-heading-anchor-permalink" href="#Avoiding-memory-allocation" title="Permalink"></a></h2><p>For similar problems solved many times, it is possible to preallocate working memory and feed it using the <code>cache</code> keyword argument. Each algorithm has its own cache:</p><pre><code class="language-julia hljs">acx_cache = AcxCache(x0);
+res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa);
+display(res_with_objective)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">• minimizer: 3-element Vector{Float64}:
+ 0.35988539821029
+ 1.2560951029223146
+ 2.6634043582726785
+
+Result of SpeedMapping, aa algo
+• maps: 18  • f_calls: 24  • iterations: 17  • residual_norm: = 1.2074325435679254e-10
+• status: first_order</code></pre><h2 id="Avoiding-memory-allocation"><a class="docs-heading-anchor" href="#Avoiding-memory-allocation">Avoiding memory allocation</a><a id="Avoiding-memory-allocation-1"></a><a class="docs-heading-anchor-permalink" href="#Avoiding-memory-allocation" title="Permalink"></a></h2><p>For similar problems solved many times, it is possible to preallocate working memory and feed it using the <code>cache</code> keyword argument. Each algorithm has its own cache:</p><pre><code class="language-julia hljs">acx_cache = AcxCache(x0);
 aa_cache = AaCache(x0);</code></pre><p>Note that <span>$x0$</span> must still be supplied to speedmapping.</p><p>For small-sized problems with <strong>ACX</strong>, heap-allocation can be avoided by supplying a static array or a tuple as starting point and using the keyword argument <code>m</code> for the mapping function, offering additional speed gains.</p><pre><code class="language-julia hljs">using StaticArrays
 
 function power_iteration(xin, A)
@@ -72,10 +110,10 @@ bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -&gt; power_itera
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -&gt; power_iteration(x, $As));
 times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])))/1000 .* u&quot;μs&quot;;
 return hcat([&quot;eigen&quot;, &quot;Allocating&quot;, &quot;Pre-allocated&quot;, &quot;Non allocating&quot;],times)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">4×2 Matrix{Any}:
- &quot;eigen&quot;           14.587 μs
- &quot;Allocating&quot;       2.534 μs
- &quot;Pre-allocated&quot;    2.276 μs
- &quot;Non allocating&quot;   1.604 μs</code></pre><h2 id="Working-with-scalars"><a class="docs-heading-anchor" href="#Working-with-scalars">Working with scalars</a><a id="Working-with-scalars-1"></a><a class="docs-heading-anchor-permalink" href="#Working-with-scalars" title="Permalink"></a></h2><p><code>m</code> also accepts scalars and tuples.</p><pre><code class="language-julia hljs">speedmapping(0.5; m = cos);
+ &quot;eigen&quot;           14.737 μs
+ &quot;Allocating&quot;       2.328 μs
+ &quot;Pre-allocated&quot;    2.157 μs
+ &quot;Non allocating&quot;   1.312 μs</code></pre><h2 id="Working-with-scalars"><a class="docs-heading-anchor" href="#Working-with-scalars">Working with scalars</a><a id="Working-with-scalars-1"></a><a class="docs-heading-anchor-permalink" href="#Working-with-scalars" title="Permalink"></a></h2><p><code>m</code> also accepts scalars and tuples.</p><pre><code class="language-julia hljs">speedmapping(0.5; m = cos);
 speedmapping((0.5, 0.5); m = x -&gt; (cos(x[1]), sin(x[2])));</code></pre><h1 id="Solving-non-linear-systems-of-equations"><a class="docs-heading-anchor" href="#Solving-non-linear-systems-of-equations">Solving non linear systems of equations</a><a id="Solving-non-linear-systems-of-equations-1"></a><a class="docs-heading-anchor-permalink" href="#Solving-non-linear-systems-of-equations" title="Permalink"></a></h1><p>For non-linear systems of equations (finding <span>$x^*$</span> such that <span>$G(x^*) = 0$</span>), only <strong>AA</strong> with constant relaxation should be used (and is set by default). The keyword argument to supply <span>$G$</span> is <code>r!</code>.</p><pre><code class="language-julia hljs">function r!(resid, x)
 	resid[1] = x[1]^2;
 	resid[2] = (x[2] + x[1])^3;
@@ -99,5 +137,10 @@ g_Rosenbrock(x :: StaticArray) = SA[400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1
 speedmapping(SA[-1.2, 1.]; g = g_Rosenbrock);
 
 g_Rosenbrock(x :: Tuple) = (400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2]));
-speedmapping((-1.2, 1.); g = g_Rosenbrock);</code></pre><p>Scalar functions can also be supplied. E.g. <span>$f(x) = e^x + x^2$</span></p><pre><code class="language-julia hljs">return speedmapping(0.; f = x -&gt; exp(x) + x^2, g = x -&gt; exp(x) + 2x);</code></pre><h2 id="Adding-box-constraint"><a class="docs-heading-anchor" href="#Adding-box-constraint">Adding box constraint</a><a id="Adding-box-constraint-1"></a><a class="docs-heading-anchor-permalink" href="#Adding-box-constraint" title="Permalink"></a></h2><p>An advantage of <strong>ACX</strong> is that constraints on parameters have little impact on estimation speed. They are added with the keyword arguments <code>lower</code> and <code>upper</code> (<code>= nothing</code> by default). The starting point does not need to be in the feasible domain, but, if supplied, upper / lower <em>need to be of type x0</em>.</p><pre><code class="language-julia hljs">speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf]);
-speedmapping(0.; g = x -&gt; exp(x) + 2x, upper = -1.);</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Introduction</a><a class="docs-footer-nextpage" href="../api/">API »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.25 on <span class="colophon-date" title="Sunday 17 August 2025 19:23">Sunday 17 August 2025</span>. Using Julia version 1.11.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+speedmapping((-1.2, 1.); g = g_Rosenbrock);</code></pre><p>Scalar functions can also be supplied. E.g. <span>$f(x) = e^x + x^2$</span></p><pre><code class="language-julia hljs">res_scalar = speedmapping(0.; f = x -&gt; exp(x) + x^2, g = x -&gt; exp(x) + 2x);
+display(res_scalar)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">• minimizer: -0.3517337140823905
+
+Result of SpeedMapping, acx algo
+• maps: 8  • f_calls: 5  • iterations: 3  • residual_norm: = 7.659449519081818e-9
+• status: first_order</code></pre><h2 id="Adding-box-constraint"><a class="docs-heading-anchor" href="#Adding-box-constraint">Adding box constraint</a><a id="Adding-box-constraint-1"></a><a class="docs-heading-anchor-permalink" href="#Adding-box-constraint" title="Permalink"></a></h2><p>An advantage of <strong>ACX</strong> is that constraints on parameters have little impact on estimation speed. They are added with the keyword arguments <code>lower</code> and <code>upper</code> (<code>= nothing</code> by default). The starting point does not need to be in the feasible domain, but, if supplied, upper / lower <em>need to be of type x0</em>.</p><pre><code class="language-julia hljs">speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf]);
+speedmapping(0.; g = x -&gt; exp(x) + 2x, upper = -1.);</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Introduction</a><a class="docs-footer-nextpage" href="../api/">API »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.25 on <span class="colophon-date" title="Sunday 17 August 2025 19:29">Sunday 17 August 2025</span>. Using Julia version 1.11.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
