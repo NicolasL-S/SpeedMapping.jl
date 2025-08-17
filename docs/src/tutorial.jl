@@ -137,8 +137,8 @@ bench_eigen = @benchmark eigen($A);
 bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A));
 bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache);
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As));
-times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times]))); # times_out = [t*" "*string(times[i]) * " ns" for (i, t) in enumerate(("eigen:         ", "Allocating:    ", "Pre-allocated: ", "Non allocating:"))];
-display(times .* u"ns")
+times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times]))) .* u"ns"; # times_out = [t*" "*string(times[i]) * " ns" for (i, t) in enumerate(("eigen:         ", "Allocating:    ", "Pre-allocated: ", "Non allocating:"))];
+display(times)
 
 
 # ## Working with scalars
