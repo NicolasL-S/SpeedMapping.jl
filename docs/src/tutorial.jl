@@ -65,17 +65,15 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo 
 # [EM-algorithm](https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm) 
 # example from [Hasselblad (1969)](https://www.tandfonline.com/doi/abs/10.1080/01621459.1969.10501071).
 
-# # Since speedmapping always assumes that the problem is a minimization, the objective is the 
-# # negative log likelihood.
+## Speedmapping always assumes that the problem is a minimization so the objective is the negative log likelihood.
 function neg_log_likelihood(x)
 	freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
     p, μ1, μ2 = x
     yfact = μ1expy = μ2expy = 1.
     l = 0.
     for y in eachindex(freq)
-        l += freq[y] * log((p * exp(-μ1) * μ1expy + 
-                        (1 - p) * exp(-μ2) * μ2expy) / yfact)
-        yfact *= Float64(y)
+        l += freq[y] * log((p * exp(-μ1) * μ1expy + (1 - p) * exp(-μ2) * μ2expy) / yfact)
+        yfact *= y
         μ1expy *= μ1
         μ2expy *= μ2
     end
@@ -135,7 +133,6 @@ As += Diagonal(1:n);
 x0s = @SVector ones(n);
 
 res_static = speedmapping(x0s; m = x -> power_iteration(x, As));
-display(res_static)
 
 # Comparing speed gains
 
@@ -144,7 +141,7 @@ bench_eigen = @benchmark eigen($A);
 bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A));
 bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache); # Pre-allocated
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)); # Non allocating
-times = Int.(round.(median.((bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times))));
+times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])))/1000 .* u"μs";
 display(hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"], times))
 
 # ## Working with scalars
@@ -200,14 +197,16 @@ speedmapping((-1.2, 1.); g = g_Rosenbrock);
 
 # Scalar functions can also be supplied. E.g. $f(x) = e^x + x^2$
 
-speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x);
+res_scalar = speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x);
+display(res_scalar)
 
 # ## Adding box constraint
 # 
 # An advantage of **ACX** is that constraints on parameters have little impact on estimation speed. 
 # They are added with the keyword arguments `lower` and `upper` (`= nothing` by default). The 
-# starting point does not need to be in the feasible domain, but, if supplied, upper / lower need
-# to be of type x0.
+# starting point does not need to be in the feasible domain, but, if supplied, upper / lower _need
+# to be of type x0_.
 
 speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf]);
 speedmapping(0.; g = x -> exp(x) + 2x, upper = -1.);
+
