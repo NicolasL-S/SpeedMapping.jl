@@ -49,7 +49,7 @@ The most reliable algorithm is obviously LBFGS which converged to minima reasona
 
 There are no constrained problems in [ArtificialLandscapes](https://github.com/NicolasL-S/ArtificialLandscapes.jl), but we can easily add arbitrary ones for testing purposes. For each problem with starting point `x0` an upper bound `x0 .+ 0.5` is imposed, and no lower bound. 
 
-An advantage of **ACX** is that box constraints add little extra computation. For `Optim`, lower and upper bounds are added as barrier functions using [`fminbox`](https://julianlsolvers.github.io/Optim.jl/stable/user/minimization/#Box-Constrained-Optimization). Another interesting option to explore is [LBFGSB.jl](https://github.com/Gnimuc/LBFGSB.jl), a wrapper around a Fortran implementation of [L-BFGS-B](https://digital.library.unt.edu/ark:/67531/metadc666315/), which handles constraints differently. 
+An advantage of **ACX** is that box constraints add little extra computation. `Optim` adds lower and upper bounds using barrier functions via [`fminbox`](https://julianlsolvers.github.io/Optim.jl/stable/user/minimization/#Box-Constrained-Optimization). Another interesting option is [LBFGSB.jl](https://github.com/Gnimuc/LBFGSB.jl), a wrapper around a Fortran implementation of [L-BFGS-B](https://digital.library.unt.edu/ark:/67531/metadc666315/), which handles constraints differently. 
 
 A problem is considered having converged when the |gradientᵢ| < 1e-7 for all i for which a constraint was non-binding. A constraint is considered binding if |xᵢ - boundᵢ| < 1e-7 and gradientᵢ < 0 (since it is a minimization with upper bound).
 
