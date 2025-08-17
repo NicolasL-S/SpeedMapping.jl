@@ -82,7 +82,7 @@ function neg_log_likelihood(x)
     return -l
 end
 
-function EM_map(xout, xin)
+function EM_map!(xout, xin)
 	freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
     p, μ1, μ2 = xin
     sum_freq_z1 = sum_freq_z2 = sum_freq_y_z1 = sum_freq_y_z2 = 0.0
