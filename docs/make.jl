@@ -21,5 +21,6 @@ makedocs(
                 "Benchmarks" => "benchmarks.md"
                ])
 deploydocs(;
-    repo="github.com/NicolasL-S/SpeedMapping.jl"
+    repo="github.com/NicolasL-S/SpeedMapping.jl",
+    devbranch = "main",
 )
