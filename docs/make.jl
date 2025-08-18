@@ -2,6 +2,7 @@ cd(@__DIR__)
 using SpeedMapping
 using Documenter
 using Literate
+using Unitful
 
 DocMeta.setdocmeta!(SpeedMapping, :DocTestSetup, :(using SpeedMapping); recursive=true)
 
