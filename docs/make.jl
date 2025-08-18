@@ -3,6 +3,8 @@ using SpeedMapping
 using Documenter
 using Literate
 
+DocMeta.setdocmeta!(SpeedMapping, :DocTestSetup, :(using SpeedMapping); recursive=true)
+
 Literate.markdown(
     joinpath(@__DIR__, "src", "tutorial.jl"), joinpath(@__DIR__, "src");
     credit = false
