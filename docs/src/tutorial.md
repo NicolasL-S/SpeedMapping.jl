@@ -1,5 +1,5 @@
 ```@meta
-EditURL = "src/tutorial.jl"
+EditURL = "tutorial.jl"
 ```
 
 `speedmapping(x0; kwargs...)`  solves three types of problems:
@@ -11,25 +11,19 @@ using two algorithms:
 - Alternating cyclic extrapolations (**ACX**) [Lepage-Saucier, 2024](https://www.sciencedirect.com/science/article/abs/pii/S0377042723005514)
 - Anderson Acceleration (**AA**) [Anderson, 1964](https://dl.acm.org/doi/10.1145/321296.321305)
 
-This tutorial will display its main functionality on simple problems. To see which specification may be more performant for your problem, the [Benchmarks section] compares all of them, along with other Julia packages
-with similar functionalities.
+This tutorial will display its main functionality on simple problems. To see which specification
+may be more performant for your problem, the **Benchmarks** section compares all of them, along
+with other Julia packages with similar functionalities.
 
 # Accelerating convergent mapping iterations
-
-Let $F:\mathbb{R}^n\rightarrow\mathbb{R}^n$ and $x \in \mathbb{R}^n$ be a reasonable starting
-point. If the series $x, F(x), F(F(x)),...$ converges to $x^*$ where $F(x^*) = x^*$, the **ACX** algorithm
-and [**AA** with adative relaxation](https://arxiv.org/abs/2408.16920) can be used to accelerate the
-convergence. If $F$ does not converge, the problem can simply be redefined as
-[solving $G(x) = F(x) - x = 0$](#Solving-non-linear-systems-of-equations).
 
 Let's find the dominant eigenvalue of a matrix $A$ using the accelerated [Power iteration](https://en.wikipedia.org/wiki/Power_iteration).
 
 ````@example tutorial
-#using StaticArrays, BenchmarkTools
-using BenchmarkTools
+using LinearAlgebra
 
 n = 10;
-A = ones(n,n) .+ Diagonal(1:n)
+A = ones(n,n) .+ Diagonal(1:n);
 
 # An in-place mapping function to avoid allocations
 function power_iteration!(xout, xin, A)
@@ -47,25 +41,33 @@ nothing #hide
 Speedmapping has one mandatory argument: the starting point ``x0``. The mapping is specified with the keyword argument ``m!``.
 
 ````@example tutorial
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A))
+using SpeedMapping
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A));
+display(res)
+````
 
+The dominant eigenvalue is:
+
+````@example tutorial
 v = res.minimizer; ## The dominant eigenvector
-dominant_eigenvalue = v'A*v/v'v
+dominant_eigenvalue = v'A*v/v'v;
 eigen(A).values[10] ≈ dominant_eigenvalue
 ````
 
 With `m!`, the default algorithm is `algo = :acx`. To switch, set `algo = :aa`.
 
 ````@example tutorial
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa)
+res_aa = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa);
+display(res_aa)
 ````
 
 By default, **AA** uses [adaptive relaxation](https://arxiv.org/abs/2408.16920), which can
 reduce the number of iterations. It is specified by the keyword argument
-`adarel = :minimum_distance`. For constant relaxation, set `adarel = :none`.
+`adarelax = :minimum_distance`. For constant relaxation, set `adarelax = :none`.
 
 ````@example tutorial
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarel = :none)
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarelax = :none);
+nothing #hide
 ````
 
 Another recent development for **AA** is **Composite AA** by [Chen and Vuik, 2022](https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096).
@@ -74,21 +76,52 @@ the computation and can speed-up some applications. The default is
 `composite = :none`. Two versions are available:
 
 ````@example tutorial
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :aa1)
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :acx2)
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :aa1);
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, composite = :acx2);
+nothing #hide
 ````
 
 Some mapping iterations maximize or minimize a certain objective function. Since some **AA** steps
-can deteriorate the objective, it would be best to avoid them by falling back to the last map. This
-can be done by supplying an objective function (assumed to be a minimization
-problem) using `f` as keyword argument. Here is an illustrative example
-using the [EM-algorithm](https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm).
+can deteriorate the objective, it would be best to avoid them by falling back to the last map.
+This can be done by supplying an objective function (assumed to be a minimization problem) using
+`f` as keyword argument. Here is an illustrative
+[EM-algorithm](https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm)
+example from [Hasselblad (1969)](https://www.tandfonline.com/doi/abs/10.1080/01621459.1969.10501071).
 
 ````@example tutorial
-using FixedPointTestProblems
-EMx0, EMmap!, EMobj = problems["Hasselblad, Poisson mixtures"]()
-speedmapping(EMx0; m! = EMmap!, algo = :aa)
-speedmapping(EMx0; m! = EMmap!, f = EMobj, algo = :aa)
+function neg_log_likelihood(x)
+    freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
+    p, μ1, μ2 = x
+    yfact = μ1expy = μ2expy = 1
+    log_lik = 0
+    for y in eachindex(freq)
+        log_lik += freq[y] * log((p * exp(-μ1) * μ1expy + (1 - p) * exp(-μ2) * μ2expy) / yfact)
+        yfact *= y
+        μ1expy *= μ1
+        μ2expy *= μ2
+    end
+    return -log_lik # Negative log likelihood to get a minimization problem
+end
+
+function EM_map!(xout, xin)
+    freq = (162, 267, 271, 185, 111, 61, 27, 8, 3, 1)
+    p, μ1, μ2 = xin
+    sum_freq_z1 = sum_freq_z2 = sum_freq_y_z1 = sum_freq_y_z2 = 0
+    μ1expy = μ2expy = 1
+    for i in eachindex(freq)
+        z = p * exp(-μ1) * μ1expy / (p * exp(-μ1) * μ1expy + (1 - p) * exp(-μ2) * μ2expy)
+        sum_freq_z1   += freq[i] * z
+        sum_freq_z2   += freq[i] * (1 - z)
+        sum_freq_y_z1 += (i - 1) * freq[i] * z
+        sum_freq_y_z2 += (i - 1) * freq[i] * (1 - z)
+        μ1expy *= μ1
+        μ2expy *= μ2
+    end
+    xout .= (sum_freq_z1 / sum(freq), sum_freq_y_z1 / sum_freq_z1, sum_freq_y_z2 / sum_freq_z2)
+end
+
+res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa);
+display(res_with_objective)
 ````
 
 ## Avoiding memory allocation
@@ -97,8 +130,9 @@ For similar problems solved many times, it is possible to preallocate working
 memory and feed it using the `cache` keyword argument. Each algorithm has its own cache:
 
 ````@example tutorial
-acx_cache = AcxCache(x0)
-aa_cache = AaCache(x0)
+acx_cache = AcxCache(x0);
+aa_cache = AaCache(x0);
+nothing #hide
 ````
 
 Note that ``x0`` must still be supplied to speedmapping.
@@ -111,37 +145,43 @@ additional speed gains.
 using StaticArrays
 
 function power_iteration(xin, A)
-    xout = A * xin
-    maxabs = 0.
+    xout = A * xin;
+    maxabs = 0.;
     for xi in xout
-        abs(xi) > maxabs && (max_abs = abs(xi))
-    end
-    return xout / maxabs
+        abs(xi) > maxabs && (maxabs = abs(xi))
+    end;
+    return xout / maxabs;
 end;
 
 As = @SMatrix ones(n,n);
 As += Diagonal(1:n);
 x0s = @SVector ones(n);
 
-speedmapping(x0s; m = x -> power_iteration(x, As))
+res_static = speedmapping(x0s; m = x -> power_iteration(x, As));
+nothing #hide
 ````
 
 Comparing speed gains
 
 ````@example tutorial
-using BenchmarkTools
-@benchmark eigen($A)
-@benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A)) # Allocating
-@benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache) # Pre-allocated
-@benchmark speedmapping($x0s; m = x -> power_iteration(x, $As)) # Non allocating
+using BenchmarkTools, Unitful
+
+bench_eigen = @benchmark eigen($A);
+bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A));
+bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache);
+bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As));
+times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])))/1000 .* u"μs";
+return hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"],times)
 ````
 
 ## Working with scalars
 
-`m` also accepts scalar functions.
+`m` also accepts scalars and tuples.
 
 ````@example tutorial
-speedmapping(0.5; m = cos)
+speedmapping(0.5; m = cos);
+speedmapping((0.5, 0.5); m = x -> (cos(x[1]), sin(x[2])));
+nothing #hide
 ````
 
 # Solving non linear systems of equations
@@ -151,12 +191,13 @@ constant relaxation should be used (and is set by default). The keyword argument
 `r!`.
 
 ````@example tutorial
-function r!(res, x)
-	res[1] = x[1]^2
-	res[2] = (x[2] + x[1])^3
+function r!(resid, x)
+	resid[1] = x[1]^2;
+	resid[2] = (x[2] + x[1])^3;
 end
 
-speedmapping([1.,2.]; r! = r!)
+speedmapping([1.,2.]; r! = r!);
+nothing #hide
 ````
 
 # Minimizing a function
@@ -167,57 +208,59 @@ Compared to other quasi-Newton algorithms like L-BFGS, **ACX** iterations are ve
 algorithm may struggle for ill-conditioned problems.
 
 ````@example tutorial
-f_Rosenbrock(x) = 100 * (x[1]^2 - x[2])^2 + (x[1] - 1.)^2
+f_Rosenbrock(x) = 100 * (x[1]^2 - x[2])^2 + (x[1] - 1.)^2;
 
 function g_Rosenbrock!(grad, x) # Rosenbrock gradient
-	grad[1] = 400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1)
-	grad[2] = -200 * (x[1]^2 - x[2])
+	grad[1] = 400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1);
+	grad[2] = -200 * (x[1]^2 - x[2]);
 end
 
-speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!)
+display(speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!))
 ````
 
 The function objective is only used to compute a safer initial learning rate. It can be omitted.
 
 ````@example tutorial
-speedmapping([-1.2, 1.]; g! = g_Rosenbrock!)
+speedmapping([-1.2, 1.]; g! = g_Rosenbrock!);
+nothing #hide
 ````
 
 If only the objective is supplied, the gradient is computed using using ForwardDiff.
 
 ````@example tutorial
-speedmapping([-1.2, 1.]; f = f_Rosenbrock)
+speedmapping([-1.2, 1.]; f = f_Rosenbrock);
+nothing #hide
 ````
 
 The keyword argument g can be used with static arrays or tuple to supply a non-allocating gradient.
 
 ````@example tutorial
 using StaticArrays
-g_Rosenbrock(x :: StaticArray) = SA[400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2])]
-speedmapping(SA[-1.2, 1.]; g = g_Rosenbrock)
+g_Rosenbrock(x :: StaticArray) = SA[400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2])];
+speedmapping(SA[-1.2, 1.]; g = g_Rosenbrock);
 
-g_Rosenbrock(x :: Tuple) = (400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2]))
-speedmapping((-1.2, 1.); g = g_Rosenbrock)
+g_Rosenbrock(x :: Tuple) = (400 * (x[1]^2 - x[2]) * x[1] + 2 * (x[1] - 1), -200 * (x[1]^2 - x[2]));
+speedmapping((-1.2, 1.); g = g_Rosenbrock);
+nothing #hide
 ````
 
 Scalar functions can also be supplied. E.g. $f(x) = e^x + x^2$
 
 ````@example tutorial
-speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x)
+res_scalar = speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x);
+display(res_scalar)
 ````
 
 ## Adding box constraint
 
 An advantage of **ACX** is that constraints on parameters have little impact on estimation speed.
 They are added with the keyword arguments `lower` and `upper` (`= nothing` by default). The
-starting point does not need to be in the feasible domain.
+starting point does not need to be in the feasible domain, but, if supplied, upper / lower _need
+to be of type x0_.
 
 ````@example tutorial
-speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf])
-speedmapping(0.; g = x -> exp(x) + 2x, upper = -1)
+speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf]);
+speedmapping(0.; g = x -> exp(x) + 2x, upper = -1.);
+nothing #hide
 ````
-
----
-
-*This page was generated using [Literate.jl](https://github.com/fredrikekre/Literate.jl).*
 
