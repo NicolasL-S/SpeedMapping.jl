@@ -8,6 +8,7 @@ Literate.markdown(
     credit = false
 )
 makedocs(
+         sitename = "SpeedMapping.jl",
          pages=[
                 "Introduction" => "index.md",
                 "Tutorial" => "tutorial.md",
