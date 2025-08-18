@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = SpeedMapping.jl
+CurrentModule = SpeedMapping
 ```
 
 # MyTestPkg
