@@ -114,6 +114,18 @@ struct AaState{T, FT<:AbstractFloat}
     residual_norm :: FT # |Δx|
 end
 
+"""
+- ``minimizer :: typeof(x0)``: The solution
+- ``residual_norm :: AbstractFloat``: The norm of the residual, which would be |xout - xin| for problem **1**, |residual| for problem **2**, and |∇f(x)| for problem **3** (only for non-binding components of the gradient).
+- ``maps``: the number of maps, function evaluations or gradient evaluations
+- ``f_calls``: The number of objective function evaluations
+- ``iterations``: The number of iterations
+- ``status :: Symbol``: Should equal ``:first_order`` if a solution has been found.
+- ``algo ∈ (:acx, :aa)``
+- ``acx_trace`` A vector of ``AcxState`` if `algo == :acx && store_trace == true`, `nothing` otherwise.
+- ``aa_trace`` A vector of ``AaState`` if `algo == :aa && store_trace == true`, `nothing` otherwise.
+- ``last_learning_rate :: AbstractFloat`` The last learning rate, only meaningful for problem **3**.
+"""
 struct SpeedMappingResult{T, FT <: AbstractFloat}
     minimizer :: T
     residual_norm :: FT # |resid|, or |∇f(x)| for optimization
