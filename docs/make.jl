@@ -8,12 +8,6 @@ Literate.markdown(
     credit = false
 )
 makedocs(
-         sitename = "SpeedMapping.jl",
-         format=Documenter.HTML(;
-            canonical="https://NicolasL-S.github.io/SpeedMapping.jl",
-            edit_link="main",
-            assets=String[],
-        ),
          pages=[
                 "Introduction" => "index.md",
                 "Tutorial" => "tutorial.md",
