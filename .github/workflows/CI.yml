@@ -74,6 +74,6 @@ jobs:
         shell: julia --project=docs --color=yes {0}
         run: |
           using Documenter: DocMeta, doctest
-          using MyTestPkg
-          DocMeta.setdocmeta!(MyTestPkg, :DocTestSetup, :(using MyTestPkg); recursive=true)
-          doctest(MyTestPkg)
+          using SpeedMapping
+          DocMeta.setdocmeta!(SpeedMapping, :DocTestSetup, :(using SpeedMapping); recursive=true)
+          doctest(SpeedMapping)
