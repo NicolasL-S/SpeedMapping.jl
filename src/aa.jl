@@ -141,7 +141,6 @@ function safe_map!(m!, r!, c, ind, max_new_normsq_g, bounds, buffer, true_shape)
 end
 
 function check_monotonicity!(f, c, ind, max_new_obj_val, true_shape)
-    obj_val = max_new_obj_val
     obj_val = f(reshape(c.temp_x, true_shape))
     ind.f_calls += 1
     if obj_val > max_new_obj_val
@@ -168,7 +167,7 @@ end
 function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default, 
         composite, params_F, params_I, bounds, max_time, store_trace::Bool
     )
-    monotonic = f !== nothing
+    monotonic = f !== nothing && m! !== nothing
 
     abstol, pnorm, buffer, reltol_resid_grow, abstol_obj_grow = params_F
     iter_limit, maps_limit = params_I

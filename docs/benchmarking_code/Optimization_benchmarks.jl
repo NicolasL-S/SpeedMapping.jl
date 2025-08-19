@@ -2,11 +2,12 @@
 # by tayloring the ad to each specific problem like in ... Interestingly, the NonlinearSolve, Default PolyAlg. did
 # solve all 23 problems.
 
-absolute_path_to_docs = ""
-path_plots = absolute_path_to_docs*"assets/"
-path_out = absolute_path_to_docs*"benchmarking_code/Output/"
+absolute_path_to_docs = "" # Update
 
 using BenchmarkTools, Optim, JLD2, FileIO, SpeedMapping, ArtificialLandscapes, LinearAlgebra, Logging, LBFGSB
+
+path_plots = absolute_path_to_docs*"assets/"
+path_out = absolute_path_to_docs*"benchmarking_code/Output/"
 
 ArtificialLandscapes.check_gradient_indices(gradient, x) = nothing # Very bad! But necessary for LBFGSB to work
 

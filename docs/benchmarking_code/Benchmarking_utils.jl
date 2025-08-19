@@ -72,10 +72,36 @@ function one_problem_many_solvers!(problems, pr_name, time_limit, abstol,
 	print(out_str) # All text output at once in case we are using Threads.@threads
 end
 
+"""
+Benchmarks problems × solvers.
+
+many_problems_many_solvers(problems, fixed_point_solvers, problem_names, solver_names, compute_norm; kwargs) :: results
+
+where: 
+- `problems :: Dictionary` is a dictionary of problems (can be tuples (e.g. (x0, obj, grad!)) or functions to generate problems)
+- `fixed_point_solvers :: Dictionary` is a dictionary of solvers
+- `problem_names :: Array{String}` contains the (ordered) names of the problems to benchmark
+- `solver_names :: Array{String}` contains the (ordered) names of the solvers to benchmark
+- `compute_norm :: Function` `compute_norm(problem, x)` is a function taking a problem and a point `x` and returning the norm at `x`. It is used to assess whether a problem has converged. It is necessary to specify this function because problems may have specific functions to compute residuals (`m!(xout,xin)`, `r!(resid, x)`, `g!(gradient, x)`. It also allows flexibility may compute the Euclidean norm, the infinity norm, etc. It may also optionally return a string as second argument as diagnostic.
+
+Keyword arguments:
+- `abstol = 1e-7`
+- `time_limit = 10.`
+- `tunits = 1` is the unit of time used to output computation times. Possible values are 1, 2, 3, corresponding to `s`, `ms`, and `μs`. `tunits` can be a scalar or a vector with same length as problem_names (to specify a different unit for each problem). 
+- `F_name = "F evals"` specifies how to name gradient/maps or r evaluations in the output.
+- `gen_Feval_limit :: Function = (problem, time_limit) -> 100000`. `gen_Feval_limit` is a function which, based on the specific problem and the desired maximum time to compute it, can compute an approximate number of maximum F evaluations.
+- `results :: [Dict{String, Tuple{Float64, Float64}}] = nothing` A vector to save the benchmarks. Since these benchmarks may take hours, preallocating results may allow not to lose previous computation in case the program is interrupted. To combine with the keyword argument `problem_start`.
+- `problem_indices = eachindex(problem_names)` Indices of a subset of `solver_names` to solve.
+- `proper_benchmark = true` Whether to solve each problem × solver just once or to use BenchmarkTools to benchmark times accurately.
+- `draws :: Integer = 1` For randomly generated problems, we may want to do many draws for each problem.
+- `multithreaded = false` When `draws` > 1, it may make sense to use multithreaded = true. In that case, since compte times are less reliable, maybe set `proper_benchmark = false`.
+
+Outputs a vector or matrix of results (n problems × n draws), which are Dictionary of "solver name" -> (nb of F evaluations, time) (Solvers that did not converge are not stored.)
+"""
 function many_problems_many_solvers(problems, fixed_point_solvers, problem_names, 
 		solver_names, compute_norm; abstol = 1e-7, time_limit = 10., tunits = 1, 
 		F_name = "F evals", gen_Feval_limit = (problem, time_limit) -> 100000, draws = 1, 
-		proper_benchmark = true, results = nothing, problem_start = 1, multithreaded = false
+		proper_benchmark = true, results = nothing, problem_indices = eachindex(problem_names), multithreaded = false
 	)
 	length(tunits) == 1 && (tunits = tunits * ones(length(problem_names)))
 	length(abstol) == 1 && (abstol = abstol * ones(length(problem_names)))
@@ -86,7 +112,7 @@ function many_problems_many_solvers(problems, fixed_point_solvers, problem_names
 		results = [Dict{String, Tuple{Float64, Float64}}() for i in eachindex(problems), j in 1:draws]
 	end
 	
-	for pr in problem_start:length(problem_names)
+	for pr in problem_indices
 		pr_name = problem_names[pr]
 		if !multithreaded
 			for draw = 1:draws # If the functions generate random data eash draw
@@ -106,7 +132,8 @@ function many_problems_many_solvers(problems, fixed_point_solvers, problem_names
 end
 
 # Few problems, we can show all of them
-function plot_res(results, problem_names, solver_names, title, path; size = (700, 500), legend_rowgap = -5)
+function plot_res(results, problem_names, solver_names, title, path; size = (700, 500), 
+	legend_rowgap = -5, xticklabelrotation = pi/3)
 
 	# Assigning indices to solvers
 	solver_ind = Dict{String, Int64}()
@@ -172,7 +199,7 @@ function plot_res(results, problem_names, solver_names, title, path; size = (700
 	f = Figure(size = size)
 	ax = Axis(f[1:2, 1], xticks = (1:length(solver_names), 
 		solver_names[order] .*" (".*string.(conv_solvers[order]).*"/".*string(length(problem_names)).*")"), 
-		xticklabelrotation = pi/3, titlesize = ltext, xticklabelsize = stext, 
+		xticklabelrotation = xticklabelrotation, titlesize = ltext, xticklabelsize = stext, 
 		yticklabelsize = stext, spinewidth = 0.5, xtickwidth = 0.5, ytickwidth = 0.5, 
 		ylabel = "Time relative to the fastest", ylabelsize = stext, yscale = log10, 
 		title = title, titlealign = :left, valign = :top,

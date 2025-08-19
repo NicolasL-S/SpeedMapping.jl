@@ -2,12 +2,13 @@
 # by tayloring the ad to each specific problem like in ... Interestingly, the NonlinearSolve, Default PolyAlg. did
 # solve all 23 problems.
 
+absolute_path_to_docs = "" # Update
+
 using BenchmarkTools, NonlinearProblemLibrary, NonlinearSolve, NLsolve, JLD2, FileIO, DiffEqBase, LinearAlgebra #, SpeedMapping
 
-absolute_path = ""
-path_plots = absolute_path*"assets/"
-path_out = absolute_path*"benchmarking_code/Output/"
-include(absolute_path * "Benchmarking_utils.jl")
+path_plots = absolute_path_to_docs*"assets/"
+path_out = absolute_path_to_docs*"benchmarking_code/Output/"
+include(absolute_path_to_docs * "benchmarking_code/Benchmarking_utils.jl")
 
 # Creating a problem dictionary
 NlPL = NonlinearProblemLibrary
@@ -60,10 +61,10 @@ function Speedmapping_nls_wrapper(problem, abstol, maps_limit)
 		lags = 30, maps_limit, condition_max = 1e6)
 	return res.minimizer, maps[], string(res.status)
 end
-#=
+
 nlsolvers["Speedmapping, aa"] = (problem, abstol, start_time, maps_limit, time_limit) -> 
 	Speedmapping_nls_wrapper(problem, abstol, maps_limit)
-=#
+
 # NonlinearSolve
 function NonlinearSolve_wrapper(problem, abstol, maps_limit, solver)
 	x0, r! = problem
@@ -143,10 +144,11 @@ nl_res_all = many_problems_many_solvers(nlproblems, nlsolvers, nlproblem_names,
 	time_limit = 10, proper_benchmark = true)
 
 JLD2.@save path_out*"nl_res_all.jld2" nl_res_all
+# nl_res_all = JLD2.load_object(path_out*"nl_res_all.jld2") # To load
 
 title = "Performance of various Julia solvers for nonlinear problems"
 plot_res(nl_res_all, nlproblem_names_len, nlsolver_names, title, path_plots*"nonlinear_benchmarks.svg"; 
-	size = (800, 500), legend_rowgap = -5)
+	size = (800, 600), legend_rowgap = -5)
 
 #=
 Generalized Rosenbrock function: 10 parameters, abstol = 1.0e-7.

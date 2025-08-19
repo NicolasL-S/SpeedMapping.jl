@@ -1,6 +1,6 @@
 # Benchmarks
 
-The following benchmarks compare various SpeedMapping specifications with other packages with similar functionalities. Given the great diversity of problems, the only criterion for convergence is always `|residual| < abstol`, even when different algorithms may converge to different fixed points or minima. `abstol` is set to 1e-7, except for a few especially long or difficult problems. 
+The following benchmarks compare various SpeedMapping specifications with similar packages. Given the great diversity of problems, the only criterion for convergence is always `|residual| < abstol`, even when different algorithms may converge to different fixed points, zeros, or minima. `abstol` is set to 1e-7, except for a few especially long or difficult problems. 
 
 Every effort has been made to ensure a fair comparison of the packages. 
 - The same algorithms are run with the same parameters (e.g. the maximum number of lags for Anderson Acceleration is set to 30). 
@@ -14,8 +14,7 @@ The benchmarking scripts are available [here](https://github.com/NicolasL-S/Spee
 For mapping applications, the **ACX** algorithm can be compared with **AA**:
 - with or without adaptive relaxation
 - with or without composition. 
-- For mapping applications with objective function available, monotonicity (with tolerance for 
-objective deterioration) can also be imposed or not.
+- For mapping applications with objective function available, monotonicity (with tolerance for objective deterioration) can also be imposed or not.
 
 The two other most used fixed-point acceleration packages in Julia are `FixedPoint` and `FixedPointAcceleration` (with algorithms `SEA`, `VEA`, `MPE`, `RRE` and `Anderson`).
 
@@ -23,7 +22,7 @@ The benchmarks are based on 15 problems from physics, statistics, genetics and s
 
 ![Mapping results](https://raw.githubusercontent.com/NicolasL-S/SpeedMapping.jl/refs/heads/MajorRefactor/docs/assets/mapping_benchmarks.svg)
 
-The height of each marker indicates how much longer each algorithm took relative to the fastest algorithm for each problem. The color scale shows the same for the number of iterations. The left-most algorithms are the most reliable and the quickest. **ACX** and monotonic **AA** perform well. While **AA** tends to need fewer iterations, **ACX** is lighter and tends to be quicker.
+Marker indicates how much longer each algorithm took relative to the fastest algorithm for each problem. The color scale shows the same for the number of iterations. The left-most algorithms are the most reliable and the quickest. **ACX** and monotonic **AA** perform well. While **AA** tends to need fewer iterations, **ACX** is lighter and tends to be quicker. Composite **AA** is also surprisingl fast, despite not solving one problem.
 
 ## Solving non-linear systems of equations
 
