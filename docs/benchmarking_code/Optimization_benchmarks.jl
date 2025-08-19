@@ -117,7 +117,7 @@ end
 order_length = sortperm([l for (name, l) in optim_prob_sizes])
 optim_problems_names = [name for (name, l) in optim_prob_sizes][order_length]
 optim_solver_names = sort([name for (name, wrapper) in optim_solvers])
-optim_solver_constr_names = sort([name for (name, wrapper) in optim_solvers_constr])
+optim_solver_constr_names = [optim_solver_names;"LBFGSB"] # To make sure that the color of the curve for each solver does not change
 
 function compute_norm(problem, solution)
 	gout = similar(solution)
@@ -167,6 +167,7 @@ res_all_constr = many_problems_many_solvers(landscapes, optim_solvers_constr, op
 	time_limit = 100., proper_benchmark = true, results = res_all_constr, problem_start = 1)
 
 JLD2.@save path_out*"res_optim_constr.jld2" res_all_constr
+# res_all_constr = JLD2.load_object(path_out*"res_optim_constr.jld2") # To load
 title = "Performance profiles for non-linear, box-constriained optimization"
 perf_profiles(res_all_constr, title, path_plots*"optimization_constr_performance.svg", 
 	optim_solver_constr_names; sizef = (640, 480), stat_num = 2, max_fact = 16)
