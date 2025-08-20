@@ -15,6 +15,7 @@ makedocs(
     format = Documenter.HTML(
         canonical = "https://juliadata.github.io/SpeedMapping.jl/stable/",
         edit_link = "main",
+        assets=String[],
     ),
     pages=[
         "Introduction" => "index.md",
