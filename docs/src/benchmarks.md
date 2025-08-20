@@ -7,7 +7,7 @@ Every effort has been made to ensure a fair comparison of the packages.
 - Otherwise, default options are preferred to get "out-of-the-box" performances. 
 - Initialization time is included in compute time. 
 
-The benchmarking scripts are available [here](https://github.com/NicolasL-S/SpeedMapping.jl/tree/MajorRefactor/docs/benchmarking_code).
+The benchmarking scripts, raw data, and detailed results are available [here](https://github.com/NicolasL-S/SpeedMapping.jl/tree/MajorRefactor/docs/benchmarking_code).
 
 ## Accelerating convergent mapping iterations
 

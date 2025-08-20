@@ -25,5 +25,6 @@ makedocs(
 )
 deploydocs(;
     repo="github.com/NicolasL-S/SpeedMapping.jl.git",
+    branch = "main",
     devbranch = "main",
 )

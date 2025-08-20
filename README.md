@@ -11,9 +11,4 @@ SpeedMapping solves three types of problems:
 2. Solving non-linear systems of equations
 3. Minimizing a function, possibly with box constraints
 
-using two algorithms:
-- [Alternating cyclic extrapolations](https://www.sciencedirect.com/science/article/abs/pii/S0377042723005514) (**ACX**)
-- [Anderson Acceleration](https://en.wikipedia.org/wiki/Anderson_acceleration) (**AA**)
-
-It provides access to recently developed algorithms which, based on benchmarks, are competitive 
-with Julia packages solving similar problems.
+using two algorithms: [Alternating cyclic extrapolations](https://www.sciencedirect.com/science/article/abs/pii/S0377042723005514) and [Anderson Acceleration](https://en.wikipedia.org/wiki/Anderson_acceleration). With recently developed features, SpeedMapping [is competitive with similar Julia packages](https://nicolasl-s.github.io/SpeedMapping.jl/dev/benchmarks/).
