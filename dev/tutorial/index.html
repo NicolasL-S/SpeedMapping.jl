@@ -110,10 +110,10 @@ bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -&gt; power_itera
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -&gt; power_iteration(x, $As));
 times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])))/1000 .* u&quot;μs&quot;;
 return hcat([&quot;eigen&quot;, &quot;Allocating&quot;, &quot;Pre-allocated&quot;, &quot;Non allocating&quot;],times)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">4×2 Matrix{Any}:
- &quot;eigen&quot;           14.567 μs
- &quot;Allocating&quot;       2.332 μs
- &quot;Pre-allocated&quot;    2.144 μs
- &quot;Non allocating&quot;   1.6 μs</code></pre><h2 id="Working-with-scalars"><a class="docs-heading-anchor" href="#Working-with-scalars">Working with scalars</a><a id="Working-with-scalars-1"></a><a class="docs-heading-anchor-permalink" href="#Working-with-scalars" title="Permalink"></a></h2><p><code>m</code> also accepts scalars and tuples.</p><pre><code class="language-julia hljs">speedmapping(0.5; m = cos);
+ &quot;eigen&quot;           14.687 μs
+ &quot;Allocating&quot;       2.378 μs
+ &quot;Pre-allocated&quot;    2.161 μs
+ &quot;Non allocating&quot;   1.34 μs</code></pre><h2 id="Working-with-scalars"><a class="docs-heading-anchor" href="#Working-with-scalars">Working with scalars</a><a id="Working-with-scalars-1"></a><a class="docs-heading-anchor-permalink" href="#Working-with-scalars" title="Permalink"></a></h2><p><code>m</code> also accepts scalars and tuples.</p><pre><code class="language-julia hljs">speedmapping(0.5; m = cos);
 speedmapping((0.5, 0.5); m = x -&gt; (cos(x[1]), sin(x[2])));</code></pre><h1 id="Solving-non-linear-systems-of-equations"><a class="docs-heading-anchor" href="#Solving-non-linear-systems-of-equations">Solving non linear systems of equations</a><a id="Solving-non-linear-systems-of-equations-1"></a><a class="docs-heading-anchor-permalink" href="#Solving-non-linear-systems-of-equations" title="Permalink"></a></h1><p>For non-linear systems of equations (finding <span>$x^*$</span> such that <span>$G(x^*) = 0$</span>), only <strong>AA</strong> with constant relaxation should be used (and is set by default). The keyword argument to supply <span>$G$</span> is <code>r!</code>.</p><pre><code class="language-julia hljs">function r!(resid, x)
 	resid[1] = x[1]^2;
 	resid[2] = (x[2] + x[1])^3;
