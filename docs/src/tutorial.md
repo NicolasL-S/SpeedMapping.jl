@@ -38,7 +38,7 @@ x0 = ones(n);
 nothing #hide
 ````
 
-Speedmapping has one mandatory argument: the starting point ``x0``. The mapping is specified with the keyword argument ``m!``.
+Speedmapping has one mandatory argument: the starting point `x0`. The mapping is specified with the keyword argument `m!`.
 
 ````@example tutorial
 using SpeedMapping
