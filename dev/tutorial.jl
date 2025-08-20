@@ -33,7 +33,7 @@ function power_iteration!(xout, xin, A)
 end;
 x0 = ones(n);
 
-# Speedmapping has one mandatory argument: the starting point ``x0``. The mapping is specified with the keyword argument ``m!``.
+# Speedmapping has one mandatory argument: the starting point `x0`. The mapping is specified with the keyword argument `m!`.
 using SpeedMapping
 res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A));
 display(res)
