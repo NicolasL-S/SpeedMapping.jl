@@ -39,7 +39,7 @@ res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A));
 display(res)
 
 # The dominant eigenvalue is:
-v = res.minimizer; ## The dominant eigenvector
+v = res.minimizer; # The dominant eigenvector
 dominant_eigenvalue = v'A*v/v'v;
 eigen(A).values[10] ≈ dominant_eigenvalue
 
