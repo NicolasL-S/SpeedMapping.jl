@@ -261,6 +261,6 @@ to be of type x0_.
 ````@example tutorial
 speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf]);
 speedmapping(0.; g = x -> exp(x) + 2x, upper = -1.);
-nothing #hide
+nothing #hide 
 ````
 
