@@ -1,3 +1,4 @@
+# # Tutorial
 # `speedmapping(x0; kwargs...)`  solves three types of problems:
 # 1. [Accelerating convergent mapping iterations](#Accelerate-convergent-mapping-iterations)
 # 2. [Solving non-linear systems of equations](#Solve-non-linear-systems-of-equations)
