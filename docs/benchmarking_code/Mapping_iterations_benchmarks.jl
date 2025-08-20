@@ -301,27 +301,25 @@ SpeedMapping, aa, mono, compo (acx2)                   86          0.07ms  true 
 SpeedMapping, aa, mono, compo (acx2), adaptive         82          0.07ms  true 3.207e-08                     first_order       -130.9812823204004
 SpeedMapping, acx                                     108          0.02ms  true 7.039e-08                     first_order       -130.9812823204003
 
-Consumption smoothing: 107 parameters, abstol = 1.0e-7.
-Solver                                               maps            time  conv   |resid|                             log
-FixedPoint                                           1837         100.02s false 1.198e-03                       Timed out
-FixedPointAcceleration, Anderson                       20           0.93s  true 2.001e-08     ReachedConvergenceThreshold
-FixedPointAcceleration, MPE                           223          10.20s  true 4.670e-08     ReachedConvergenceThreshold
-FixedPointAcceleration, RRE                          2265         100.00s false 2.944e-02                       Timed out
-FixedPointAcceleration, SEA                          2060         100.00s false 4.077e+00                       Timed out
-FixedPointAcceleration, VEA                          2185         100.03s false 1.482e-04                       Timed out
-SpeedMapping, aa                                       18           0.92s  true 7.841e-09                     first_order
-SpeedMapping, aa, adaptive                             20           0.88s  true 9.965e-09                     first_order
-SpeedMapping, aa, compo (aa1)                          35           1.71s  true 6.680e-09                     first_order
-SpeedMapping, aa, compo (aa1), adaptive                35           1.68s  true 3.741e-09                     first_order
-SpeedMapping, aa, compo (acx2)                         38           1.81s  true 4.646e-08                     first_order
-SpeedMapping, aa, compo (acx2), adaptive               38           1.62s  true 5.808e-08                     first_order
-SpeedMapping, aa, mono                                 18           0.91s  true 7.841e-09                     first_order
-SpeedMapping, aa, mono, adaptive                       20           0.92s  true 9.965e-09                     first_order
-SpeedMapping, aa, mono, compo (aa1)                    35           1.78s  true 6.680e-09                     first_order
-SpeedMapping, aa, mono, compo (aa1), adaptive          35           1.74s  true 3.741e-09                     first_order
-SpeedMapping, aa, mono, compo (acx2)                   38           1.92s  true 4.646e-08                     first_order
-SpeedMapping, aa, mono, compo (acx2), adaptive         38           1.63s  true 5.808e-08                     first_order
-SpeedMapping, acx                                      82           4.18s  true 6.180e-08                     first_order
+FixedPoint                                            798         100.07s false 2.824e-01                       Timed out
+FixedPointAcceleration, Anderson                       20           2.20s  true 2.000e-08     ReachedConvergenceThreshold
+FixedPointAcceleration, MPE                            91          11.21s  true 7.959e-08     ReachedConvergenceThreshold
+FixedPointAcceleration, RRE                           797         100.09s false 4.772e-02                       Timed out
+FixedPointAcceleration, SEA                            50           7.67s false       NaN InvalidInputOrOutputOfIteration
+FixedPointAcceleration, VEA                           316          36.98s  true 4.343e-08     ReachedConvergenceThreshold
+SpeedMapping, aa                                       18           2.64s  true 7.840e-09                     first_order
+SpeedMapping, aa, adaptive                             20           2.21s  true 9.967e-09                     first_order
+SpeedMapping, aa, compo (aa1)                          35           4.21s  true 6.680e-09                     first_order
+SpeedMapping, aa, compo (aa1), adaptive                35           5.01s  true 3.742e-09                     first_order
+SpeedMapping, aa, compo (acx2)                         38           6.60s  true 4.646e-08                     first_order
+SpeedMapping, aa, compo (acx2), adaptive               38           4.14s  true 5.808e-08                     first_order
+SpeedMapping, aa, mono                                 18           2.33s  true 7.840e-09                     first_order
+SpeedMapping, aa, mono, adaptive                       20           2.29s  true 9.967e-09                     first_order
+SpeedMapping, aa, mono, compo (aa1)                    35           3.79s  true 6.680e-09                     first_order
+SpeedMapping, aa, mono, compo (aa1), adaptive          35           4.27s  true 3.742e-09                     first_order
+SpeedMapping, aa, mono, compo (acx2)                   38           4.05s  true 4.646e-08                     first_order
+SpeedMapping, aa, mono, compo (acx2), adaptive         38           4.24s  true 5.808e-08                     first_order
+SpeedMapping, acx                                      66           7.77s  true 1.221e-08                     first_order
 
 ALS for CANDECOMP: 450 parameters, abstol = 1.0e-7.
 Solver                                               maps            time  conv   |resid|                             log
