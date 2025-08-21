@@ -151,7 +151,7 @@ function check_monotonicity!(f, c, ind, max_new_obj_val, true_shape)
     return obj_val
 end
 
-function compute_β_minimum_distance(y_new :: T, y :: T, x :: T, rel_default) where T
+function compute_β_minimum_distance(y_new :: T, y :: T, x :: T, relax_default) where T
     num = den = zero(eltype(x))
     @inbounds @simd for i in eachindex(x)
         c1 = y[i] - x[i]
@@ -159,12 +159,12 @@ function compute_β_minimum_distance(y_new :: T, y :: T, x :: T, rel_default) wh
         den += c1 * c1
     end
 
-    return den > 1e-50 ? num / den : rel_default
+    return den > 1e-50 ? num / den : relax_default
 end
 
 # TODO: change norms to sum square like for acx (minor importance for performance though)
 
-function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default, 
+function aa(f, r!, m!, c::AaCache, x0, condition_max, ada_relax, relax_default, 
         composite, params_F, params_I, bounds, max_time, store_trace::Bool
     )
     monotonic = f !== nothing && m! !== nothing
@@ -199,7 +199,7 @@ function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default,
         obj_val = prevfloat(typemax(FT)) # A placeholder
     end
     
-    β_md_AR1 = β = β_minimum_distance = last_β_minimum_distance = rel_default
+    β_md_AR1 = β = β_minimum_distance = last_β_minimum_distance = relax_default
     β_diffs_sq = one(FT)
     nβ_outside_unit = 0
 
@@ -247,26 +247,26 @@ function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default,
                 c.α[(s + i) % mp1 + 1] = c.θs[ind.lags][i] - c.θs[ind.lags][i - 1]
             end
 
-            if adarel == :none
-                β = rel_default
+            if ada_relax == :none
+                β = relax_default
 
-            elseif adarel == :minimum_distance
+            elseif ada_relax == :minimum_distance
                 max_nβ_outside_unit = 10 # 100
                 β_md_AR1 = 0.1β_minimum_distance + 0.9β_md_AR1
                 β_diffs_sq = 0.2*(β_minimum_distance - last_β_minimum_distance)^2 + 0.8β_diffs_sq
                 root_β_diffs_sq = min(sqrt(β_diffs_sq),1)
-                β = root_β_diffs_sq * rel_default + (1 - root_β_diffs_sq) * β_md_AR1
+                β = root_β_diffs_sq * relax_default + (1 - root_β_diffs_sq) * β_md_AR1
                 
-                nβ_outside_unit > max_nβ_outside_unit && (β = rel_default)
+                nβ_outside_unit > max_nβ_outside_unit && (β = relax_default)
 
-                β < 0 && (β = rel_default)
-                nβ_outside_unit = 0 ≤ β ≤ rel_default ? 0 : nβ_outside_unit + 1
+                β < 0 && (β = relax_default)
+                nβ_outside_unit = 0 ≤ β ≤ relax_default ? 0 : nβ_outside_unit + 1
 
             else
                 throw(error("Unknown adaptive relaxation"))
             end
             
-            if β == 1 && adarel == :none
+            if β == 1 && ada_relax == :none
                 mul!(c.temp_x, c.Y, c.α)
             else
                 mul!(c.Xα, c.X, c.α)
@@ -293,9 +293,9 @@ function aa(f, r!, m!, c::AaCache, x0, condition_max, adarel, rel_default,
 
         lpnormsq_g < abstolsq && break
         
-        if adarel == :minimum_distance && iter >= 2
+        if ada_relax == :minimum_distance && iter >= 2
             last_β_minimum_distance = β_minimum_distance
-            β_minimum_distance = compute_β_minimum_distance(c.y, c.Yα, c.Xα, rel_default)
+            β_minimum_distance = compute_β_minimum_distance(c.y, c.Yα, c.Xα, relax_default)
         end
 
         if composite ∈ (:aa1, :acx2)

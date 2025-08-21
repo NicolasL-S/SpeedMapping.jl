@@ -32,11 +32,11 @@ fixed_point_solvers = Dict{AbstractString, Function}()
 
 function Speedmapping_fp_wrapper(problem, abstol, timesup, maps_limit, options)
 	x0, map!, obj = problem
-	algo, adarelax, composite, mono = options
+	algo, ada_relax, composite, mono = options
 	maps = Ref(0)
 	f = mono ? obj : nothing
 	res = speedmapping(x0; m! = (x_out, x_in) -> _map!(map!, x_out, x_in, maps, maps_limit, timesup), 
-		f, algo, abstol, adarelax, composite = composite, lags = 30, maps_limit, condition_max = 1e6)
+		f, algo, abstol, ada_relax, composite = composite, lags = 30, maps_limit, condition_max = 1e6)
 	return res.minimizer, maps[], string(res.status)
 end
 

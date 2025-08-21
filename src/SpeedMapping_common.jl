@@ -125,15 +125,15 @@ speedmapping([1.,1.]; g!  =  (grad, x)  -> grad .= 4x.^3, lower = [-Inf, 2.])
 
 - Affecting both **ACX** and **AA**: `cache`,  `abstol`, `pnorm`, `maps_limit`, `iter_limit`, `time_limit`, `reltol_resid_grow`, `buffer`, `store_trace`
 - Affecting **ACX**: `orders`, `initial_learning_rate`
-- Affecting **AA**: `lags`, `condition_max`, `adarelax`, `relax_default`, `composite`, `abstol_obj_grow`
+- Affecting **AA**: `lags`, `condition_max`, `ada_relax`, `relax_default`, `composite`, `abstol_obj_grow`
 """
 function speedmapping(
         x0 :: T; f :: FN = nothing, g! :: FN = nothing, g :: FN = nothing, m! :: FN = nothing, 
         m :: FN = nothing, r! :: FN = nothing, algo::Symbol = r! !== nothing ? :aa : :acx, # Note: we don't use r because static arrays are not implemented for aa 
         cache :: Union{AcxCache, AaCache, Nothing} = nothing, 
         orders :: Tuple = (2,3,3), initial_learning_rate :: Real = 1., initialize_learning_rate :: Bool = true,
-        lags :: Integer = 30, condition_max :: Real = 1e6, rel_default :: Real = 1., 
-        adarelax :: Symbol = m! !== nothing ? :minimum_distance : :none, composite :: Symbol = :none, 
+        lags :: Integer = 30, condition_max :: Real = 1e6, relax_default :: Real = 1., 
+        ada_relax :: Symbol = m! !== nothing ? :minimum_distance : :none, composite :: Symbol = :none, 
         abstol :: AbstractFloat = 1e-8, pnorm :: Real = 2., 
         maps_limit :: Real = 1_000_000_000, iter_limit = 1_000_000_000, time_limit :: Real = Inf, 
         reltol_resid_grow :: Real = algo == :aa ? 4. : (g! !== nothing || g !== nothing) ? 1e5 : 100, 
@@ -179,7 +179,7 @@ function speedmapping(
 
         composite ∉ (:none, :aa1, :acx2) && throw(ArgumentError("Unknown composite type"))
 
-        return aa(f, r!, m!, cache, x0, condition_max, adarelax, FT(rel_default), composite, 
+        return aa(f, r!, m!, cache, x0, condition_max, ada_relax, FT(relax_default), composite, 
             params_F, params_I, bounds, max_time, store_trace)
     end
 
