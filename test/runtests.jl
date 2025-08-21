@@ -99,7 +99,7 @@ end
 	@test aa_res_lin.aa_trace[1].x[1] == 0
 
 	# Test with m! and other specs
-    min_aa_res_lin2 = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true, composite = :aa1, adarelax = :none, pnorm = Inf).minimizer
+    min_aa_res_lin2 = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true, composite = :aa1, ada_relax = :none, pnorm = Inf).minimizer
 	@test min_aa_res_lin2'min_aa_res_lin2 ≈ 13.1725
 
     min_aa_res_lin3 = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true, composite = :acx2, lags = 3, abstol = 1e-10, pnorm = 1).minimizer
