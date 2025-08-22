@@ -1,19 +1,18 @@
 # ## Tutorial
 # `speedmapping(x0; kwargs...)`  solves three types of problems:
-# 1. [Accelerating convergent mapping iterations](#Accelerate-convergent-mapping-iterations)
-# 2. [Solving non-linear systems of equations](#Solve-non-linear-systems-of-equations)
-# 3. [Minimizing a function, possibly with box constraints](#Minimize-a-function)
+# 1. [Accelerating convergent mapping iterations](#Accelerating-convergent-mapping-iterations)
+# 2. [Solving non-linear systems of equations](#Solving-non-linear-systems-of-equations)
+# 3. [Minimizing a function, possibly with box constraints](#Minimizing-a-function)
 #
 # using two algorithms:
 # - Alternating cyclic extrapolations (**ACX**) [Lepage-Saucier, 2024](https://www.sciencedirect.com/science/article/abs/pii/S0377042723005514)
 # - Anderson Acceleration (**AA**) [Anderson, 1964](https://dl.acm.org/doi/10.1145/321296.321305)
-
 #
 # This tutorial will display its main functionality on simple problems. To see which specification 
 # may be more performant for your problem, the **Benchmarks** section compares all of them, along 
 # with other Julia packages with similar functionalities.
 #
-# ## Accelerating convergent mapping iterations
+# # Accelerating convergent mapping iterations
 #
 # Let's find the dominant eigenvalue of a matrix $A$ using the accelerated [Power iteration](https://en.wikipedia.org/wiki/Power_iteration).
 
@@ -49,8 +48,8 @@ display(res_aa)
 
 # By default, **AA** uses [adaptive relaxation](https://arxiv.org/abs/2408.16920), which can 
 # reduce the number of iterations. It is specified by the keyword argument 
-# `adarelax = :minimum_distance`. For constant relaxation, set `adarelax = :none`.
-res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, adarelax = :none);
+# `ada_relax = :minimum_distance`. For constant relaxation, set `ada_relax = :none`.
+res = speedmapping(x0; m! = (xout, xin) -> power_iteration!(xout, xin, A), algo = :aa, ada_relax = :none);
 
 # Another recent development for **AA** is **Composite AA** by [Chen and Vuik, 2022](https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096).
 # A one-step **AA** iteration (using 2 maps) is inserted between 2 full **AA** steps, which reduces 
@@ -101,19 +100,23 @@ end
 res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa);
 display(res_with_objective)
 
-# Note that something we didn't consider is that the domain of $(p, μ₁, μ₂)$ should be restricted 
-# since $1 < p < 1$ is a probability (hopefully not the degenerate values $p = 0$ or $p = 1$), and 
-# $μ₁, μ₂ > 0$ are the inverse scales of exponential distributions. This can be communicated 
-# effortlessly to SpeedMapping by adding bounds:
+# ## Simple constraints on parameters
+#
+# In the previous example, the parameters being estimated, $p, μ₁, μ₂$, have restricted domains; 
+# $1 < p < 1$ is a probability (where the degenerate values $p = 0$ and $p = 1$ are hopefully 
+# avoided), and $μ₁, μ₂ > 0$ are the inverse scales of exponential distributions. To avoid the risk 
+# that an iterate falls outside of its domain, bounds can be supplied using the keyword arguments 
+# `lower` and `upper`:
 
 res_with_objective = speedmapping([0.25, 1., 2.]; f = neg_log_likelihood, m! = EM_map!, algo = :aa,
-    lower = [0.,0.,0.], upper = [1., Inf, Inf], buffer = 0.05);
+    lower = [0, 0, 0], upper = [1., Inf, Inf], buffer = 0.05);
 
-# Here, the keyword argument `buffer` (= 0.05 by default for **P1**) ensures that a parameter will 
-# be at minimum at a distance 0.05 × |x_last - bound| of the boundary, where x_last is a parameter's 
-# last value. This safeguard avoids jumping to the bounds instantly (unless buffer = 0). For 
-# instance, if p_last = 0.2 and p_try = -0.05 (AA's next iterate), then 
-# p = buffer × p_last + (1 - buffer) × lower_bound = 0.05 * 0.2 + 0.95 * 0. = 0.01.
+# Here, the keyword argument `buffer` (= 0.05 by default for mapping applications) ensures that a 
+# parameter xᵢ will be at least at a distance buffer $× |$xᵢprev $-$ boundᵢ$|$ of boundᵢ, where 
+# xᵢprev is xᵢ's previous value. This safeguard avoids jumping to boundᵢ instantly (unless buffer 
+# $= 0$), in case boundᵢ is infeasible or is a saddle point. For instance, if xᵢprev $= 0.2$, lowerᵢ 
+# $= 0$, but AA's unconstrained next iterate would be xᵢtry $= -0.1$, then xᵢ is set to 
+# max$($xᵢtry, buffer $×$ xᵢprev $+ (1 -$ buffer$) ×$ lowerᵢ$) =$ max$(-0.1, 0.05 × 0.2 + 0.95 × 0) = 0.01$.
 #
 # ## Avoiding memory allocation
 #
@@ -125,19 +128,19 @@ aa_cache = AaCache(x0);
 
 # Note that `x0` must still be supplied to speedmapping.
 
-# For small-sized problems with **ACX**, heap-allocation can be avoided by supplying a static array 
+# For small-sized problems with **ACX**, heap allocation can be avoided by supplying a static array 
 # as starting point and using the keyword argument `m` for the mapping function:
 
 using StaticArrays
 
 function power_iteration(xin, A)
-    xout = A * xin;
-    maxabs = 0.;
+    xout = A * xin
+    maxabs = 0.
     for xi in xout
         abs(xi) > maxabs && (maxabs = abs(xi))
-    end;
+    end
     return xout / maxabs;
-end;
+end
 
 As = @SMatrix ones(n,n);
 As += Diagonal(1:n);
@@ -156,9 +159,9 @@ bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As))
 times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])))/1000 .* u"μs";
 return hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"],times)
 
-# ## Working with scalars
+# ## Working with immutable types
 #
-# `m` also accepts scalars and tuples.
+# Along with `StaticArray`, `m` accepts other immutable types like `Real' and `Tuple`.
 
 speedmapping(0.5; m = cos);
 speedmapping((0.5, 0.5); m = x -> (cos(x[1]), sin(x[2])));
@@ -191,7 +194,8 @@ function g_Rosenbrock!(grad, x) # Rosenbrock gradient
 	grad[2] = -200 * (x[1]^2 - x[2]);
 end
 
-speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!)
+res_optim = speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!);
+display(res_optim)
 
 # The function objective is only used to compute a safer initial learning rate. It can be omitted.
 speedmapping([-1.2, 1.]; g! = g_Rosenbrock!);
@@ -213,12 +217,11 @@ speedmapping((-1.2, 1.); g = g_Rosenbrock);
 res_scalar = speedmapping(0.; f = x -> exp(x) + x^2, g = x -> exp(x) + 2x);
 display(res_scalar)
 
-# ## Adding box constraint
+# ## Adding box constraints
 # 
 # An advantage of **ACX** is that constraints on parameters have little impact on estimation speed. 
 # They are added via the keyword arguments `lower` and `upper` (`= nothing` by default). The 
-# starting point does not need to be in the feasible domain, but, if supplied, upper / lower _need
-# to be of type x0_.
+# starting point does not need to be in the feasible domain.
 
-speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2, -Inf]);
-speedmapping(0.; g = x -> exp(x) + 2x, upper = -1.);
+speedmapping([-1.2, 1.]; f = f_Rosenbrock, g! = g_Rosenbrock!, lower = [2., -Inf]);
+speedmapping(0.; g = x -> exp(x) + 2x, upper = -1);
