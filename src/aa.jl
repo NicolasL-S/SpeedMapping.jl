@@ -178,6 +178,10 @@ function aa(f, r!, m!, c::AaCache, x0, condition_max, ada_relax, relax_default,
     true_shape = size(x0)
     T = typeof(x0)
     c.x .= vec(x0)
+
+    bounds.l ≠ nothing && (c.x .= max.(vec(bounds.l), c.x)) # In case the starting point is outside the domain
+    bounds.u ≠ nothing && (c.x .= min.(vec(bounds.u), c.x)) # In case the starting point is outside the domain
+
     max_qrdeletes = 10 # How many times we can use _qrdeletes without rebuilding the QR decomposition from scratch to mitigate inaccuracy
 
     mp1 = size(c.Y, 2)

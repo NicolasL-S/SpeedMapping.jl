@@ -89,9 +89,11 @@ end
 
     # support for tuples
     @test collect(speedmapping((0.,0.); g = gt).minimizer) ≈ [1, 1]
+
+    # support for scalars with bounds of Integer type and x0 outside the bounds
+    @test speedmapping(0.; g = x -> 2x, lower = 5).minimizer ≈ 5.
 end
 
-# Test for aa
 @testset "AA" begin
 	# Test with m!
 	aa_res_lin = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true)
@@ -108,9 +110,16 @@ end
 	# Test with r!
 	aa_res_lin_r = speedmapping(zeros(n_lin); r! = r_diag!, algo = :aa)
 	@test aa_res_lin_r.minimizer'aa_res_lin_r.minimizer ≈ 13.1725
+
+    # Test with bounds of various types
+    aa_res_lin_constr = speedmapping(x0_lin; m! = map_diag!, algo = :aa, lower = ones(Int, 5))
+    @test aa_res_lin_constr.minimizer'aa_res_lin_constr.minimizer ≈ 14.25
+
+    aa_res_lin_r_constr = speedmapping(zeros(n_lin); r! = r_diag!, algo = :aa, upper = ones(5))
+    @test aa_res_lin_r_constr.minimizer'aa_res_lin_r_constr.minimizer ≈ 3.9225
 end
 
-@testset "Exceptions" begin
+@testset "GracefulExceptions" begin
 
     # Can't provide both g! and m!
     @test exception(:(speedmapping([0.0, 0.0]; g!, m!)), ArgumentError)
@@ -129,4 +138,14 @@ end
 
     # array with g
     @test exception(:(speedmapping([0., 0.]; g = gt, algo = :aa)), ArgumentError) 
+
+    # bound constraints with complex
+    @test exception(:(speedmapping([0. + 1.0im, 0. + 1.0im]; g!, algo = :aa, lower = [-1,-1])), ArgumentError) 
+    @test exception(:(speedmapping([0., 0.]; g!, algo = :aa, lower = [-1 + 1.0im,-1 + 1.0im])), ArgumentError) 
+
+    # bound constraints with wrong dimension
+    @test exception(:(speedmapping([0., 0.]; g!, algo = :aa, lower = [-1,-1, -1])), ArgumentError) 
+
+    # infeasible bounds
+    @test exception(:(speedmapping([0., 0.]; g!, algo = :aa, lower = [0, 10], upper = [5, 5])), ArgumentError) 
 end

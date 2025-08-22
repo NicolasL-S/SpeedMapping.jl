@@ -1,5 +1,5 @@
 function box_constraints_and_update_resid_low!(
-    extr, x_try::T, r::T, err::T, x_old::T, lower::T, params_F, ip, α
+    extr, x_try::T, r::T, err::T, x_old::T, lower, params_F, ip, α
 ) where {T}
 
     b = params_F.buffer
@@ -26,7 +26,7 @@ function box_constraints_and_update_resid_low!(
 end
 
 function box_constraints_and_update_resid_high!(
-    extr, x_try::T, r::T, err::T, x_old::T, upper::T, params_F, ip, α
+    extr, x_try::T, r::T, err::T, x_old::T, upper, params_F, ip, α
 ) where {T}
     b = params_F.buffer
     bc = 1 - b

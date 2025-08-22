@@ -41,7 +41,7 @@ cdot(x, y, FT :: Type) :: FT = real(dot(x,y)) # To help the compiler infers the 
 
 # Makes sure x_try[i] stays within boundaries with a gap buffer * (bound[i] - x_old[i]).
 function box_constraints!(
-    extr, x_try::T, x_old::T, bound :: T, buffer, ip
+    extr, x_try::T, x_old::T, bound, buffer, ip
 ) where {T}
 
     if ip
@@ -109,13 +109,13 @@ using StaticArrays
 speedmapping(1.; m = x -> 0.9x)
 speedmapping(SA[1.,1.]; m = x -> 0.9x)
 speedmapping(1.; g = x -> 4x^3)
-speedmapping((1.,1.); g = x -> (4x[1]^3,3x[2] - 1))
+speedmapping((2.,2.); g = x -> (x[1] - 2, x[2].^3))
 ```
 `f ::  FN  =  nothing` computes an objective function. 
 - For **3**, `f` will be used to initialize the learning rate better.
 - For  **1** using **AA**, `f` will be used ensure monotonicity of the algorithm. 
 
-`lower, upper::Union{Nothing, T} = nothing` define bounds on parameters which can be used with any problems and any algorithm.
+`lower, upper = nothing` define bounds on parameters which can be used with any problems and any algorithm.
 ```Julia
 speedmapping([1.,1.]; g!  =  (grad, x)  -> grad .= 4x.^3, lower = [-Inf, 2.])
 ```
@@ -136,9 +136,9 @@ function speedmapping(
         ada_relax :: Symbol = m! !== nothing ? :minimum_distance : :none, composite :: Symbol = :none, 
         abstol :: AbstractFloat = 1e-8, pnorm :: Real = 2., 
         maps_limit :: Real = 1_000_000_000, iter_limit = 1_000_000_000, time_limit :: Real = Inf, 
-        reltol_resid_grow :: Real = algo == :aa ? 4. : (g! !== nothing || g !== nothing) ? 1e5 : 100, 
+        reltol_resid_grow :: Real = algo == :aa ? 4. : (g! !== nothing || g !== nothing) ? 1e5 : 100., 
         abstol_obj_grow :: Real = √abstol, 
-        lower :: Union{Nothing, T} = nothing, upper :: Union{Nothing, T} = nothing, 
+        lower = nothing, upper = nothing, 
         buffer :: AbstractFloat = (m! !== nothing || m !== nothing) ? 0.05 : 0.,
         store_trace :: Bool = false
     ) where {T} # T can typically be a mutable abstract array, or with :acx it could be a scalar, static array, a tuple...
@@ -161,13 +161,27 @@ function speedmapping(
     maps_limit = Int(ceil(min(maps_limit, typemax(1))))
     iter_limit = Int(ceil(min(iter_limit, typemax(1))))
     params_I = (iter_limit = iter_limit, maps_limit = maps_limit)
+
+    for bound in (lower, upper)
+        if bound !== nothing 
+            eachindex(bound) == eachindex(x0) || throw(ArgumentError("bounds and x0 should have the same indices"))
+            eltype(x0) <: Real || throw(ArgumentError("Bounds only available for Real types"))
+            eltype(bound) <: Real || throw(ArgumentError("Bounds should be Real"))
+        end
+    end
+
+    if lower !== nothing && upper !== nothing
+        for i in eachindex(lower)
+            lower[i] <= upper[i] || throw(ArgumentError("bound constraint #$i is infeasible because $(lower[i]) > $(upper[i])."))
+        end
+    end
     bounds = (l = lower, u = upper)
     
     if algo == :aa
         # Fix this (inputs, etc)
         m! ≠ nothing || r! ≠ nothing || throw(ArgumentError("m! or r! must be provided with algo :aa")) 
         (g! ≠ nothing || g ≠ nothing) && throw(ArgumentError("for minimization, use algo :acx"))
-        r! ≠ nothing && (lower !== nothing || upper !== nothing) && throw(ArgumentError("bounds not available with r!"))
+        #r! ≠ nothing && (lower !== nothing || upper !== nothing) && throw(ArgumentError("bounds not available with r!"))
 
         if in_place && cache === nothing 
             cache = AaCache(x0; lags)
