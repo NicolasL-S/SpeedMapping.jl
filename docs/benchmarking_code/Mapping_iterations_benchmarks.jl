@@ -142,9 +142,8 @@ JLD2.@save path_out*"res_maps_all.jld2" res_maps_all
 # res_maps_all = JLD2.load_object(path_out*"res_maps_all.jld2") # To load
 
 title = "Performance of various Julia solvers for fixed-point mapping problems"
-
 plot_res(res_maps_all, problems_names_len, solver_names, title, path_plots*"mapping_benchmarks.svg"; 
-	size = (800, 400), legend_rowgap = -5, xticklabelrotation = pi/2.25)
+	size = (700, 430), legend_rowgap = -8, height_main = 260)
 
 #=
 Hasselblad, Poisson mixtures: 3 parameters, abstol = 1.0e-7.
