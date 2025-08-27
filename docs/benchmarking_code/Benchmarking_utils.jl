@@ -132,7 +132,7 @@ function many_problems_many_solvers(problems, fixed_point_solvers, problem_names
 end
 
 # Few problems, we can show all of them
-function plot_res(results, problem_names, solver_names, title, path; size = (900, 500), 
+function plot_res(results, problem_names, solver_names, title, path; size = (800, 500), 
 	legend_rowgap = -5, xticklabelrotation = pi/3)
 
 	# Assigning indices to solvers
