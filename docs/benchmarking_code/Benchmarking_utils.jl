@@ -133,7 +133,7 @@ end
 
 # Few problems, we can show all of them
 function plot_res(results, problem_names, solver_names, title, path; size = (700, 500), 
-	legend_rowgap = -5, height_main = 300, label_bar = "Function evals rel. to the best")
+	legend_rowgap = -5, height_main = 300, label_bar = "Function evaluations relative to the best")
 
 	# Assigning indices to solvers
 	solver_ind = Dict{String, Int64}()
