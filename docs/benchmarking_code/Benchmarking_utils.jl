@@ -132,7 +132,7 @@ function many_problems_many_solvers(problems, fixed_point_solvers, problem_names
 end
 
 # Few problems, we can show all of them
-function plot_res(results, problem_names, solver_names, title, path; size = (700, 500), 
+function plot_res(results, problem_names, solver_names, title, path; size = (900, 500), 
 	legend_rowgap = -5, xticklabelrotation = pi/3)
 
 	# Assigning indices to solvers
@@ -164,7 +164,7 @@ function plot_res(results, problem_names, solver_names, title, path; size = (700
 		end
 	end
 	times_solvers ./= max.(conv_solvers,1) # Average times
-	order = sortperm(conv_solvers .- 0.9 * times_solvers ./ maximum(times_solvers); rev = true)
+	order = sortperm(conv_solvers .- 0.9 * times_solvers ./ maximum(times_solvers))
 
 	markers = [:circle, :rect, :diamond, :hexagon, :cross, :xcross, :utriangle, :dtriangle, 
 		:ltriangle, :rtriangle, :pentagon, :star4, :star5, :star6, :star8, :vline, :hline, 
@@ -197,17 +197,19 @@ function plot_res(results, problem_names, solver_names, title, path; size = (700
 	# Makie backend
 
 	f = Figure(size = size)
-	ax = Axis(f[1:2, 1], xticks = (1:length(solver_names), 
+
+	ax = Axis(f[1:2, 1], yticks = (1:length(solver_names), 
 		solver_names[order] .*" (".*string.(conv_solvers[order]).*"/".*string(length(problem_names)).*")"), 
-		xticklabelrotation = xticklabelrotation, titlesize = ltext, xticklabelsize = stext, 
-		yticklabelsize = stext, spinewidth = 0.5, xtickwidth = 0.5, ytickwidth = 0.5, 
-		ylabel = "Time relative to the fastest", ylabelsize = stext, yscale = log10, 
+		titlesize = ltext, yticklabelsize = stext, 
+		xticklabelsize = stext, spinewidth = 0.5, ytickwidth = 0.5, xtickwidth = 0.5, 
+		xlabel = "Time relative to the fastest", xlabelsize = stext, xscale = log10, 
 		title = title, titlealign = :left, valign = :top,
-		xlabel = "Solver (Fraction of problems that converged in time)", xlabelsize = stext)
+		ylabel = "Solver (Fraction of problems that converged in time)", ylabelsize = stext)
 
 	plots = Scatter{Tuple{Vector{Point{2, Float64}}}}[]
+
 	for i in eachindex(results)
-		push!(plots, scatter!(x_vec[i], time_vec[i], color = Feval_vec[i], colormap = :matter, colorscale = log10, 
+		push!(plots, scatter!(time_vec[i], x_vec[i], color = Feval_vec[i], colormap = :matter, colorscale = log10, 
 		marker = markers[(i-1) % length(markers) + 1]))
 	end
 	

@@ -132,7 +132,6 @@ abstols = [1.0e-7, 1.0e-7, 1.0e-5, 1.0e-7, 1.0e-7, 1.0e-7, 1.0e-7, 1.0e-7, 1.0e-
 	1.0e-7, 1.0e-7, 1.0e-7, 1.0e-4]
 time_limits = [10, 10, 100, 10, 10, 10, 10, 100, 100, 100, 200, 100, 100, 100, 1000]
 
-
 # This should take several hours
 res_maps_all = [Dict{String, Tuple{Float64, Float64}}() for i in eachindex(problems), j in 1:1]
 res_maps_all = many_problems_many_solvers(testproblems, fixed_point_solvers, problems_names, 
@@ -143,8 +142,9 @@ JLD2.@save path_out*"res_maps_all.jld2" res_maps_all
 # res_maps_all = JLD2.load_object(path_out*"res_maps_all.jld2") # To load
 
 title = "Performance of various Julia solvers for fixed-point mapping problems"
+
 plot_res(res_maps_all, problems_names_len, solver_names, title, path_plots*"mapping_benchmarks.svg"; 
-	size = (600, 600), legend_rowgap = -3, xticklabelrotation = pi/2.25)
+	size = (900, 400), legend_rowgap = -5, xticklabelrotation = pi/2.25)
 
 #=
 Hasselblad, Poisson mixtures: 3 parameters, abstol = 1.0e-7.

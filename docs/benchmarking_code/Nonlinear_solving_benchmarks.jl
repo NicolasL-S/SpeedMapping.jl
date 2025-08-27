@@ -148,7 +148,7 @@ JLD2.@save path_out*"nl_res_all.jld2" nl_res_all
 
 title = "Performance of various Julia solvers for nonlinear problems"
 plot_res(nl_res_all, nlproblem_names_len, nlsolver_names, title, path_plots*"nonlinear_benchmarks.svg"; 
-	size = (800, 600), legend_rowgap = -5)
+	size = (900, 500), legend_rowgap = -6)
 
 #=
 Generalized Rosenbrock function: 10 parameters, abstol = 1.0e-7.
