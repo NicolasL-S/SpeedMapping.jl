@@ -33,7 +33,7 @@ SciML has already [benchmarked nonlinear solvers](https://docs.sciml.ai/SciMLBen
 
 ![Problems](https://raw.githubusercontent.com/NicolasL-S/SpeedMapping.jl/refs/heads/main/docs/assets/nonlinear_benchmarks.svg)
 
-Each marker shows how much longer each algorithm took relative to the fastest for each problem. The color scale shows the same for the number of iterations. SpeedMapping's **AA** and NonlinearSolve's Newton Raphston and Polyalgorithm are generally reliable and fast. NLSolve trust_region and newton are also surprisingly fast, despite their higher number of function evaluations. A caveat to these tests is that all problems have 10 variables or less. Adding lager-scale problems with various sparsity patterns would paint a more complete picture.
+Markers indicate how much longer each algorithm took relative to the fastest for each problem. The color scale shows the same for the number of function evaluations. SpeedMapping's **AA** and NonlinearSolve's Newton Raphston and Polyalgorithm are generally reliable and fast. NLSolve trust_region and newton are also surprisingly fast, despite their higher number of function evaluations. A caveat to these tests is that all problems have 10 variables or less. Adding lager-scale problems with various sparsity patterns would paint a more complete picture.
 
 ## Minimizing a function
 
