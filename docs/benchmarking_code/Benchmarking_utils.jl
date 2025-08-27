@@ -133,7 +133,7 @@ end
 
 # Few problems, we can show all of them
 function plot_res(results, problem_names, solver_names, title, path; size = (700, 500), 
-	legend_rowgap = -5, height_main = 300)
+	legend_rowgap = -5, height_main = 300, label_bar = "Function evals rel. to the best")
 
 	# Assigning indices to solvers
 	solver_ind = Dict{String, Int64}()
@@ -198,12 +198,12 @@ function plot_res(results, problem_names, solver_names, title, path; size = (700
 
 	f = Figure(size = size)
 
-	ax = Axis(f[1, 1], yticks = (1:length(solver_names), 
+	ax = Axis(f[1, 2], yticks = (1:length(solver_names), 
 		solver_names[order] .*" (".*string.(conv_solvers[order]).*"/".*string(length(problem_names)).*")"), 
-		titlesize = ltext, yticklabelsize = stext, 
+		titlesize = ltext, yticklabelsize = stext, halign = :right,
 		xticklabelsize = stext, spinewidth = 0.5, ytickwidth = 0.5, xtickwidth = 0.5, 
 		xlabel = "Time relative to the fastest", xlabelsize = stext, xscale = log10, 
-		title = title, titlealign = :right, valign = :top,
+		title = title, titlealign = :right, valign = :top, height = height_main, width = 340,
 		ylabel = "Solver (Fraction of problems that converged in time)", ylabelsize = stext)
 
 	plots = Scatter{Tuple{Vector{Point{2, Float64}}}}[]
@@ -213,12 +213,12 @@ function plot_res(results, problem_names, solver_names, title, path; size = (700
 		colorscale = log10, markersize = 10, marker = markers[(i-1) % length(markers) + 1]))
 	end
 	
-	Colorbar(f[1, 2], vertical = true, limits = (min_map, max_map), colormap = :roma, 
-		scale = log10, flipaxis = false, ticklabelsize = stext, width = 3, height = height_main, 
-		tickwidth = 0.5, spinewidth = 0.5, label = "F evals rel. to best", labelsize = stext,
-		halign = :left, valign = :center)
+	Colorbar(f[2, 2], vertical = false, limits = (min_map, max_map), colormap = :roma, 
+		scale = log10, flipaxis = false, ticklabelsize = stext, height = 4, 
+		tickwidth = 0.5, spinewidth = 0.5, label = label_bar, labelsize = stext,
+		halign = :right, valign = :center)
 	
-	Legend(f[2, 1:2], plots, problem_names, labelsize = vstext, framevisible = false, 
+	Legend(f[3, 1:2], plots, problem_names, labelsize = vstext, framevisible = false, 
 		"Problems (# parameters)", titlehalign = :left, titlesize = stext, rowgap = legend_rowgap, 
 		valign = :bottom, nbanks = 3, halign = :right)
 	save(path, f, pt_per_unit = 1.5)
