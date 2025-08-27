@@ -146,9 +146,9 @@ nl_res_all = many_problems_many_solvers(nlproblems, nlsolvers, nlproblem_names,
 JLD2.@save path_out*"nl_res_all.jld2" nl_res_all
 # nl_res_all = JLD2.load_object(path_out*"nl_res_all.jld2") # To load
 
-title = "Performance of various Julia solvers for nonlinear problems"
-plot_res(nl_res_all, nlproblem_names_len, nlsolver_names, title, path_plots*"nonlinear_benchmarks.svg"; 
-	size = (700, 550), legend_rowgap = -8, height_main = 340)
+nltitle = "Performance of various Julia solvers for nonlinear problems"
+plot_res(nl_res_all, nlproblem_names_len, nlsolver_names, nltitle, path_plots*"nonlinear_benchmarks.svg"; 
+	size = (700, 620), legend_rowgap = -8, height_main = 400)
 
 #=
 Generalized Rosenbrock function: 10 parameters, abstol = 1.0e-7.

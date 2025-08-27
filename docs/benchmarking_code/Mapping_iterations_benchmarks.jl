@@ -143,7 +143,7 @@ JLD2.@save path_out*"res_maps_all.jld2" res_maps_all
 
 title = "Performance of various Julia solvers for fixed-point mapping problems"
 plot_res(res_maps_all, problems_names_len, solver_names, title, path_plots*"mapping_benchmarks.svg"; 
-	size = (700, 430), legend_rowgap = -8, height_main = 260)
+	size = (700, 500), legend_rowgap = -8, height_main = 320)
 
 #=
 Hasselblad, Poisson mixtures: 3 parameters, abstol = 1.0e-7.

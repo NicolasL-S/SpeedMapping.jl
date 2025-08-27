@@ -170,7 +170,7 @@ function plot_res(results, problem_names, solver_names, title, path; size = (700
 		:ltriangle, :rtriangle, :pentagon, :star4, :star5, :star6, :star8, :vline, :hline, 
 		'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q',
 		'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
-	stext, mtext, ltext = (9,11,13)
+	vstext, stext, mtext, ltext = (9, 12,14,16)
 	
 	x_vec = Vector{Int64}[]
 	Feval_vec = Vector{Float64}[]
@@ -203,22 +203,22 @@ function plot_res(results, problem_names, solver_names, title, path; size = (700
 		titlesize = ltext, yticklabelsize = stext, 
 		xticklabelsize = stext, spinewidth = 0.5, ytickwidth = 0.5, xtickwidth = 0.5, 
 		xlabel = "Time relative to the fastest", xlabelsize = stext, xscale = log10, 
-		title = title, titlealign = :left, valign = :top,
+		title = title, titlealign = :right, valign = :top,
 		ylabel = "Solver (Fraction of problems that converged in time)", ylabelsize = stext)
 
 	plots = Scatter{Tuple{Vector{Point{2, Float64}}}}[]
 
 	for i in eachindex(results)
-		push!(plots, scatter!(time_vec[i], x_vec[i], color = Feval_vec[i], colormap = :roma, colorscale = log10, 
-		marker = markers[(i-1) % length(markers) + 1]))
+		push!(plots, scatter!(time_vec[i], x_vec[i], color = Feval_vec[i], colormap = :roma, 
+		colorscale = log10, markersize = 10, marker = markers[(i-1) % length(markers) + 1]))
 	end
 	
 	Colorbar(f[1, 2], vertical = true, limits = (min_map, max_map), colormap = :roma, 
-		scale = log10, flipaxis = false, ticklabelsize = stext, width = 5, height = height_main, 
+		scale = log10, flipaxis = false, ticklabelsize = stext, width = 3, height = height_main, 
 		tickwidth = 0.5, spinewidth = 0.5, label = "F evals rel. to best", labelsize = stext,
 		halign = :left, valign = :center)
 	
-	Legend(f[2, 1:2], plots, problem_names, labelsize = stext, framevisible = false, 
+	Legend(f[2, 1:2], plots, problem_names, labelsize = vstext, framevisible = false, 
 		"Problems (# parameters)", titlehalign = :left, titlesize = stext, rowgap = legend_rowgap, 
 		valign = :bottom, nbanks = 3, halign = :right)
 	save(path, f, pt_per_unit = 1.5)
