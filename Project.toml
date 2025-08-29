@@ -1,7 +1,7 @@
 name = "SpeedMapping"
 uuid = "f1835b91-879b-4a3f-a438-e4baacf14412"
 authors = ["Nicolas Lepage-Saucier <42039487+nicolasLepageSaucier@users.noreply.github.com> and contributors"]
-version = "0.5.0"
+version = "0.5.2"
 
 [deps]
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"

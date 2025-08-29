@@ -9,8 +9,7 @@ using BenchmarkTools, Optim, JLD2, FileIO, SpeedMapping, ArtificialLandscapes, L
 path_plots = absolute_path_to_docs*"assets/"
 path_out = absolute_path_to_docs*"benchmarking_code/Output/"
 
-ArtificialLandscapes.check_gradient_indices(gradient, x) = nothing # Very bad! But necessary for LBFGSB to work
-
+ArtificialLandscapes.check_gradient_indices(gradient, x) = nothing # Not good! But necessary for LBFGSB to work
 
 include(absolute_path_to_docs * "benchmarking_code/Benchmarking_utils.jl")
 

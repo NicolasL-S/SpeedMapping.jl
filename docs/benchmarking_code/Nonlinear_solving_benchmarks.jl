@@ -4,7 +4,7 @@
 
 absolute_path_to_docs = "" # Update
 
-using BenchmarkTools, NonlinearProblemLibrary, NonlinearSolve, NLsolve, JLD2, FileIO, DiffEqBase, LinearAlgebra #, SpeedMapping
+using BenchmarkTools, NonlinearProblemLibrary, NonlinearSolve, NLsolve, JLD2, FileIO, DiffEqBase, LinearAlgebra, SpeedMapping
 
 path_plots = absolute_path_to_docs*"assets/"
 path_out = absolute_path_to_docs*"benchmarking_code/Output/"
