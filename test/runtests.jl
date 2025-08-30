@@ -3,7 +3,6 @@ using LinearAlgebra: Hermitian, Diagonal, norm, mul!
 using SpeedMapping
 
 function f(x) # Easy Rosenbrock objective
-	f_calls[] += 1
     f_out = 0.0
     for i in 1:Int(length(x) / 2)
         f_out += (x[2i-1]^2 - x[2i])^2 + (x[2i-1] - 1)^2
@@ -12,7 +11,7 @@ function f(x) # Easy Rosenbrock objective
 end
 
 
-function f(x, f_calls) # Easy Rosenbrock objective
+function f_count(x, f_calls) # Easy Rosenbrock objective
 	f_calls[] += 1
     f_out = 0.0
     for i in 1:Int(length(x) / 2)
@@ -22,7 +21,6 @@ function f(x, f_calls) # Easy Rosenbrock objective
 end
 
 function g!(grad, x) # Easy Rosenbrock gradient
-	g_calls[] += 1
     for i in 1:Int(length(x) / 2)
         grad[2i] = -2 * (x[2i-1]^2 - x[2i])
         grad[2i-1] = 4 * (x[2i-1]^2 - x[2i]) * x[2i-1] + 2(x[2i-1] - 1)
@@ -31,7 +29,7 @@ function g!(grad, x) # Easy Rosenbrock gradient
 end
 
 
-function g!(grad, x, g_calls) # Easy Rosenbrock gradient
+function g_count!(grad, x, g_calls) # Easy Rosenbrock gradient
 	g_calls[] += 1
     for i in 1:Int(length(x) / 2)
         grad[2i] = -2 * (x[2i-1]^2 - x[2i])
@@ -73,7 +71,7 @@ tr = 2(1:n_lin)/(n_lin+1)
 function map_diag!(x_out, x_in)
 	 @. x_out = x_in - tr .* x_in + 1.
 end
-function map_diag!(x_out, x_in, maps)
+function map_diag_count!(x_out, x_in, maps)
 	maps[] += 1
 	@. x_out = x_in - tr .* x_in + 1.
 end
@@ -96,10 +94,10 @@ end
 
     # Testing the complete algorithm with f, g!, ForwardDiff, m!, lower, upper
 	@test speedmapping([-2.0, 1.0]; g!, algo = :acx).minimizer ≈ [1, 1]
-    @test speedmapping([-2.0, 1.0]; g!, store_trace=true, algo = :acx).acx_trace[1].x[1] == -2
+    @test speedmapping([-2.0, 1.0]; g!, store_trace = true, algo = :acx).acx_trace[1].x[1] == -2
 	f_calls = Ref(0)
 	g_calls = Ref(0)
-	res_opti = speedmapping(zeros(2); f = x -> f(x, f_calls), g! = (grad, x) -> g!(grad, x, g_calls), algo = :acx)
+	res_opti = speedmapping(zeros(2); f = x -> f_count(x, f_calls), g! = (grad, x) -> g_count!(grad, x, g_calls), algo = :acx)
     @test res_opti.minimizer ≈ [1, 1]
 	@test res_opti.maps == g_calls[]
 	@test res_opti.f_calls == f_calls[]
@@ -131,7 +129,7 @@ end
 @testset "AA" begin
 	# Test with m!
 	maps = Ref(0)
-	aa_res_lin = speedmapping(x0_lin; m! = (x_out, x_in) -> map_diag!(x_out, x_in, maps), algo = :aa, store_trace=true)
+	aa_res_lin = speedmapping(x0_lin; m! = (x_out, x_in) -> map_diag_count!(x_out, x_in, maps), algo = :aa, store_trace=true)
 	@test aa_res_lin.minimizer'aa_res_lin.minimizer ≈ 13.1725
 	@test aa_res_lin.aa_trace[1].x[1] == 0
 	@test aa_res_lin.maps == maps[]
