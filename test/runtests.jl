@@ -3,6 +3,17 @@ using LinearAlgebra: Hermitian, Diagonal, norm, mul!
 using SpeedMapping
 
 function f(x) # Easy Rosenbrock objective
+	f_calls[] += 1
+    f_out = 0.0
+    for i in 1:Int(length(x) / 2)
+        f_out += (x[2i-1]^2 - x[2i])^2 + (x[2i-1] - 1)^2
+    end
+    return f_out
+end
+
+
+function f(x, f_calls) # Easy Rosenbrock objective
+	f_calls[] += 1
     f_out = 0.0
     for i in 1:Int(length(x) / 2)
         f_out += (x[2i-1]^2 - x[2i])^2 + (x[2i-1] - 1)^2
@@ -11,6 +22,17 @@ function f(x) # Easy Rosenbrock objective
 end
 
 function g!(grad, x) # Easy Rosenbrock gradient
+	g_calls[] += 1
+    for i in 1:Int(length(x) / 2)
+        grad[2i] = -2 * (x[2i-1]^2 - x[2i])
+        grad[2i-1] = 4 * (x[2i-1]^2 - x[2i]) * x[2i-1] + 2(x[2i-1] - 1)
+    end
+    return nothing
+end
+
+
+function g!(grad, x, g_calls) # Easy Rosenbrock gradient
+	g_calls[] += 1
     for i in 1:Int(length(x) / 2)
         grad[2i] = -2 * (x[2i-1]^2 - x[2i])
         grad[2i-1] = 4 * (x[2i-1]^2 - x[2i]) * x[2i-1] + 2(x[2i-1] - 1)
@@ -30,6 +52,7 @@ function g_matrix!(grad, x) # Easy Rosenbrock gradient for N × 2 input
 end
 
 # Power method
+# Test en calculant f_call et g_call
 C = [1 2 3; 4 5 6; 7 8 9]
 A = C + C'
 B = Hermitian(ones(10) * ones(10)' .* im + Diagonal(1:10))
@@ -47,7 +70,13 @@ end
 # Diagonal linear problem
 n_lin = 5
 tr = 2(1:n_lin)/(n_lin+1)
-map_diag! = (x_out, x_in) -> @. x_out = x_in - tr .* x_in + 1.
+function map_diag!(x_out, x_in)
+	 @. x_out = x_in - tr .* x_in + 1.
+end
+function map_diag!(x_out, x_in, maps)
+	maps[] += 1
+	@. x_out = x_in - tr .* x_in + 1.
+end
 r_diag! = (res, x) -> @. res = x - tr .* x + 1. .- x
 x0_lin = zeros(n_lin)
 
@@ -68,7 +97,12 @@ end
     # Testing the complete algorithm with f, g!, ForwardDiff, m!, lower, upper
 	@test speedmapping([-2.0, 1.0]; g!, algo = :acx).minimizer ≈ [1, 1]
     @test speedmapping([-2.0, 1.0]; g!, store_trace=true, algo = :acx).acx_trace[1].x[1] == -2
-    @test speedmapping(zeros(2); f, g!, algo = :acx).minimizer ≈ [1, 1]
+	f_calls = Ref(0)
+	g_calls = Ref(0)
+	res_opti = speedmapping(zeros(2); f = x -> f(x, f_calls), g! = (grad, x) -> g!(grad, x, g_calls), algo = :acx)
+    @test res_opti.minimizer ≈ [1, 1]
+	@test res_opti.maps == g_calls[]
+	@test res_opti.f_calls == f_calls[]
     @test speedmapping(zeros(4); f, algo = :acx).minimizer ≈ [1, 1, 1, 1]
     @test speedmapping([5.0, 5.0]; f, g!, lower=[1.5, -Inf], algo = :acx).minimizer ≈ [1.5, 2.25]
     @test speedmapping([0.0, 0.0]; f, g!, upper=[Inf, 0.25], algo = :acx).minimizer ≈ [0.689398350053853, 0.25]
@@ -96,9 +130,11 @@ end
 
 @testset "AA" begin
 	# Test with m!
-	aa_res_lin = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true)
+	maps = Ref(0)
+	aa_res_lin = speedmapping(x0_lin; m! = (x_out, x_in) -> map_diag!(x_out, x_in, maps), algo = :aa, store_trace=true)
 	@test aa_res_lin.minimizer'aa_res_lin.minimizer ≈ 13.1725
 	@test aa_res_lin.aa_trace[1].x[1] == 0
+	@test aa_res_lin.maps == maps[]
 
 	# Test with m! and other specs
     min_aa_res_lin2 = speedmapping(x0_lin; m! = map_diag!, algo = :aa, store_trace=true, composite = :aa1, ada_relax = :none, pnorm = Inf).minimizer
