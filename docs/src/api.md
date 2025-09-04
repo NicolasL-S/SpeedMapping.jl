@@ -22,15 +22,15 @@ One and _only one_ of the following argument should be supplied. They are all of
 
 `m! :: FN = nothing` in-place mapping function for **MAP** with mutable arrays as input. 
 ```Julia
-speedmapping([1.,1.]; m! = (xout, xin) -> xout .=  0.9xin)
+speedmapping([1.,1.]; m! = (xout, xin) -> xout .= 0.9xin)
 ```
 `r! :: FN = nothing` in-place residual function for **NLS** with mutable arrays as input. 
 ```Julia
-speedmapping([1.,1.]; r! = (resid, x) -> resid .=  -0.1x)
+speedmapping([1.,1.]; r! = (resid, x) -> resid .= -0.1x)
 ```
 `g! :: FN = nothing` in-place gradient function for **MIN** with mutable arrays as input. 
 ```Julia
-speedmapping([1.,1.]; g! = (grad, x) -> grad .=  4x.^3)
+speedmapping([1.,1.]; g! = (grad, x) -> grad .= 4x.^3)
 ```
 `m` and `g` are versions of `m!` and `g!` with immutable types like `Real`, `StaticArray`, or `Tuple` as input and output.
 ```Julia
@@ -43,7 +43,7 @@ speedmapping((1.,1.); g = x -> (x[1] - 2, x[2]^3))
 ```
 ## Other important keyword arguments
 
-`algo :: Symbol = r! !==  nothing  ?  :aa  :  :acx` determines the method used.
+`algo :: Symbol = r! !== nothing ? :aa : :acx` determines the method used.
 - `:acx` can be used to solve **MAP** or **MIN** (the default for **MAP**).
 - `:aa` can be used to solve **MAP** or **NLS**. 
 
@@ -54,15 +54,15 @@ speedmapping((1.,1.); g = x -> (x[1] - 2, x[2]^3))
 
 `lower, upper = nothing` define bounds on parameters which can be used with any problem.
 ```Julia
-speedmapping([1.,1.]; g!  =  (grad, x)  -> grad .= 4x.^3, lower = [-Inf,2.])
+speedmapping([1., 1.]; g! = (grad, x) -> grad .= 4x.^3, lower = [-Inf,2.])
 ```
 ## Other keyword arguments
 ### Affecting both **ACX** and **AA**
-`cache ::  Union{AcxCache, AaCache, Nothing}  =  nothing`
+`cache :: Union{AcxCache, AaCache, Nothing} = nothing`
   pre-allocates memory for **ACX** or **AA** with mutable input
 ```Julia
 c = AaCache([1.,1.])
-speedmapping([1.,1.]; m! = (xout, xin) -> xout .=  0.9xin, algo = :aa, cache = c)
+speedmapping([1.,1.]; m! = (xout, xin) -> xout .= 0.9xin, algo = :aa, cache = c)
 ```
 
 `abstol :: AbstractFloat = 1e-8`
@@ -72,13 +72,13 @@ speedmapping([1.,1.]; m! = (xout, xin) -> xout .=  0.9xin, algo = :aa, cache = c
   - For **MIN**, the algorithm stops when `‖gradient‖ < abstol` (from `g!(gradient, x)`)
 
 `pnorm :: Real = 2.`
-  The norm used for the stopping criterion. Typically `1`, `2` or `Inf`.  
+  The norm used for the stopping criterion. Typically `1`, `2` or `Inf`.
 
 `maps_limit :: Real = 1_000_000_000`
-  The number of main function evaluation (`m!`, `r!`, or `g!`) before the algorithm terminates.
+  The maximum number of main function evaluation (`m!`, `r!`, or `g!`) before the algorithm terminates.
 
-`iter_limit :: Real = 1_000_000_000`  
-  The number of iterations before the algorithm terminates.
+`iter_limit :: Real = 1_000_000_000`
+  The maximum number of iterations before the algorithm terminates.
 
 `time_limit :: Real = Inf`
   The time limit before stopping (if `time_limit == Inf`, `time()` will not be called at each iteration).
@@ -86,7 +86,7 @@ speedmapping([1.,1.]; m! = (xout, xin) -> xout .=  0.9xin, algo = :aa, cache = c
 `reltol_resid_grow :: Real = algo == :aa ? 4. : (g! !== nothing || g !== nothing) ? 1e5 : 100.`
   `reltol_resid_grow` is a problem-specific stabilizing parameter. After a mapping/descent step/iteration, the distance between the current `x` and the previous `x` is reduced until the residual norm (`‖xout - xin‖`, `‖res‖`, or `‖grad‖`) does not increase more than a by a factor `reltol_resid_grow`. It is set to 4 for **AA** because this algorithm is more sensitive to low-quality iterations and because **NLS** may involve highly divergent functions. For **ACX** it is set to 100 for **MAP**, and for 1e5 for **MIN**.
 
-`buffer :: AbstractFloat  = (m! !==  nothing  || m !==  nothing) ?  0.05  :  0.`
+`buffer :: AbstractFloat = (m! !== nothing || m !== nothing) ? 0.05 : 0.`
   `buffer`is used in conjunction with `lower` or `upper`. If an iterate `x` lands outside a constraint, `buffer` leaves some distance between `x` and the constraint. It is set by default to `0.05` for **MAP** because constraints may be used to avoid landing immediately on bad values like saddle points at which the algorithm would stall. 
 
 `store_trace :: Bool = false`
@@ -98,14 +98,14 @@ speedmapping([1.,1.]; m! = (xout, xin) -> xout .=  0.9xin, algo = :aa, cache = c
 `orders = (2,3,3)`
   The extrapolation orders. (2,3,3) is extremely reliable, but others like (2,3), or (2,) could be considered.
 
-`initial_learning_rate ::  Real  =  1.`
+`initial_learning_rate :: Real = 1.`
   The initial learning rate used for **MIN**. If `initialize_learning_rate == true`, it is the starting point for the initialization.
 
 `initialize_learning_rate :: Bool = true`
   To find a suitable learning rate to start **MIN** for which the residual norm does not increase too fast and the change in the objective (if supplied) respects the Armijo condition.
 
 ### Affecting only **AA**
-`lags ::  Integer  =  30`
+`lags :: Integer = 30`
   The maximum number of past residuals used to compute the next iterate
 
 `condition_max :: Real = 1e6`
@@ -118,10 +118,10 @@ speedmapping([1.,1.]; m! = (xout, xin) -> xout .=  0.9xin, algo = :aa, cache = c
   Adaptive relaxation. For now, only `:minimum_distance` is implemented (see [Lepage-Saucier, 2024](https://arxiv.org/abs/2408.16920) although changes were made to the regularization). It is set to `:none` for **NLS** since `:minimum_distance` requires convergent mapping to be useful.
 
 `composite :: Symbol = :none`
-  Composite Anderson Acceleration by [Chen and Vuik, 2022](https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096). A one-step **AA** iteration (using 2 maps) is inserted between 2 full **AA** steps, which reduces  the computation and can offer interesting speed-up for some applications. Two types are implemented: `:aa1` and `acx2` (which inserts an ACX, order 2 step).
+  Composite Anderson Acceleration by [Chen and Vuik, 2022](https://onlinelibrary.wiley.com/doi/abs/10.1002/nme.7096). A one-step **AA** iteration (using 2 maps) is inserted between 2 full **AA** steps, which reduces the computation and can offer interesting speed-up for some applications. Two types are implemented: `:aa1` and `acx2` (which inserts an ACX, order 2 step).
 
-`abstol_obj_grow ::  Real  =  √abstol` 
-  If `f` is supplied,  **AA** monitors the growth of the objective. 
+`abstol_obj_grow :: Real = √abstol` 
+  If `f` is supplied with **AA**, the objective is not allowed to increase by more than `abstol_obj_grow` between iterations (otherwise, it fall back on the last map). Set `abstol_obj_grow = 0` for tight monotonicity.
 
 ## SpeedMappingResult
 `SpeedMappingResult` has fields

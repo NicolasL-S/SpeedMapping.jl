@@ -91,17 +91,17 @@ using two algorithms:
 #### Keyword arguments defining the problem
 One and _only one_ of the following argument should be supplied. All of them are of type `FN = Union{Function, Nothing}`.
 
-`m! ::  FN  =  nothing` in-place mapping function for problem **1** with mutable arrays as input. 
+`m! :: FN = nothing` in-place mapping function for problem **1** with mutable arrays as input. 
 ```Julia
-speedmapping([1.,1.]; m! = (xout, xin) -> xout .=  0.9xin)
+speedmapping([1.,1.]; m! = (xout, xin) -> xout .= 0.9xin)
 ```
-`r! ::  FN  =  nothing` in-place residual function for problem **2** with mutable arrays as input. 
+`r! :: FN = nothing` in-place residual function for problem **2** with mutable arrays as input. 
 ```Julia
-speedmapping([1.,1.]; r! = (resid, x) -> resid .=  -0.1x)
+speedmapping([1.,1.]; r! = (resid, x) -> resid .= -0.1x)
 ```
-`g! ::  FN  =  nothing` in-place gradient function for problem **3** with mutable arrays as input. 
+`g! :: FN = nothing` in-place gradient function for problem **3** with mutable arrays as input. 
 ```Julia
-speedmapping([1.,1.]; g! = (grad, x) -> grad .=  4x.^3)
+speedmapping([1.,1.]; g! = (grad, x) -> grad .= 4x.^3)
 ```
 `m` and `g` are versions of `m!` and `g!` with immutable types like `Real` or `Complex` scalar, `StaticArray` or `Tuple` as input and output.
 ```Julia
@@ -111,25 +111,25 @@ speedmapping(SA[1.,1.]; m = x -> 0.9x)
 speedmapping(1.; g = x -> 4x^3)
 speedmapping((2.,2.); g = x -> (x[1] - 2, x[2].^3))
 ```
-`f ::  FN  =  nothing` computes an objective function. 
+`f :: FN = nothing` computes an objective function. 
 - For **3**, `f` will be used to initialize the learning rate better.
-- For  **1** using **AA**, `f` will be used ensure monotonicity of the algorithm. 
+- For **1** using **AA**, `f` will be used ensure monotonicity of the algorithm. 
 
 `lower, upper = nothing` define bounds on parameters which can be used with any problems and any algorithm.
 ```Julia
-speedmapping([1.,1.]; g!  =  (grad, x)  -> grad .= 4x.^3, lower = [-Inf, 2.])
+speedmapping([1.,1.]; g! = (grad, x) -> grad .= 4x.^3, lower = [-Inf, 2.])
 ```
 ### Other keyword arguments
 
-`algo :: Symbol  = r! !==  nothing  ?  :aa  :  :acx` determines the method used, either `:acx` or `:aa` (default: `:acx`, unless `r!` is used).
+`algo :: Symbol = r! !== nothing ? :aa : :acx` determines the algorithm used, either `:acx` or `:aa` (default: `:acx`, unless `r!` is used).
 
-- Affecting both **ACX** and **AA**: `cache`,  `abstol`, `pnorm`, `maps_limit`, `iter_limit`, `time_limit`, `reltol_resid_grow`, `buffer`, `store_trace`
+- Affecting both **ACX** and **AA**: `cache`, `abstol`, `pnorm`, `maps_limit`, `iter_limit`, `time_limit`, `reltol_resid_grow`, `buffer`, `store_trace`
 - Affecting **ACX**: `orders`, `initial_learning_rate`
 - Affecting **AA**: `lags`, `condition_max`, `ada_relax`, `relax_default`, `composite`, `abstol_obj_grow`
 """
 function speedmapping(
         x0 :: T; f :: FN = nothing, g! :: FN = nothing, g :: FN = nothing, m! :: FN = nothing, 
-        m :: FN = nothing, r! :: FN = nothing, algo::Symbol = r! !== nothing ? :aa : :acx, # Note: we don't use r because static arrays are not implemented for aa 
+        m :: FN = nothing, r! :: FN = nothing, algo::Symbol = r! !== nothing ? :aa : :acx, # Note: we don't use r because immutable containers are not implemented for aa 
         cache :: Union{AcxCache, AaCache, Nothing} = nothing, 
         orders :: Tuple = (2,3,3), initial_learning_rate :: Real = 1., initialize_learning_rate :: Bool = true,
         lags :: Integer = 30, condition_max :: Real = 1e6, relax_default :: Real = 1., 
