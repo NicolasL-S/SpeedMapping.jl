@@ -161,7 +161,7 @@ return hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"], times)
 
 # ## Working with immutable types
 #
-# Along with `StaticArray`, `m` accepts other immutable types like `Real' and `Tuple`.
+# Along with `StaticArray`, `m` accepts other immutable types like `Real` (or `Complex`) and `Tuple`.
 
 speedmapping(0.5; m = cos);
 speedmapping((0.5, 0.5); m = x -> (cos(x[1]), sin(x[2])));
