@@ -19,7 +19,7 @@
 using LinearAlgebra
 
 n = 10;
-A = ones(n,n) .+ Diagonal(1:n);
+A = ones(n, n) .+ Diagonal(1:n);
 
 ## An in-place mapping function to avoid allocations
 function power_iteration!(xout, xin, A)
@@ -142,7 +142,7 @@ function power_iteration(xin, A)
     return xout / maxabs;
 end
 
-As = @SMatrix ones(n,n);
+As = @SMatrix ones(n, n);
 As += Diagonal(1:n);
 x0s = @SVector ones(n);
 
@@ -157,7 +157,7 @@ bench_alloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(
 bench_prealloc = @benchmark speedmapping($x0; m! = (xout, xin) -> power_iteration!(xout, xin, $A), cache = $acx_cache);
 bench_nonalloc = @benchmark speedmapping($x0s; m = x -> power_iteration(x, $As));
 times = Int.(round.(median.([bench_eigen.times, bench_alloc.times, bench_prealloc.times, bench_nonalloc.times])))/1000 .* u"μs";
-return hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"],times)
+return hcat(["eigen", "Allocating", "Pre-allocated", "Non allocating"], times)
 
 # ## Working with immutable types
 #
@@ -177,7 +177,7 @@ function r!(resid, x)
 	resid[2] = (x[2] + x[1])^3;
 end
 
-res_nl = speedmapping([1.,2.]; r! = r!);
+res_nl = speedmapping([1., 2.]; r! = r!);
 display(res_nl)
 
 # # Minimizing a function
